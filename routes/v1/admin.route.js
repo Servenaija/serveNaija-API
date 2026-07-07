@@ -16,6 +16,11 @@ router.route('/login')
 // ─── Auth guard for all routes below ─────────────────────────────────────────
 router.use(verifyToken, isAdmin);
 
+// ─── Create admin (superadmin only) ──────────────────────────────────────────
+router.route('/create')
+  .post(adminController.createAdmin)
+  .all(unAllowedMethod);
+
 // ─── Admin Profile ────────────────────────────────────────────────────────────
 router.route('/me')
   .get(adminController.getMe)

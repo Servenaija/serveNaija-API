@@ -24,6 +24,22 @@ function paginationParams(query) {
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
+// POST /admins/create  — superadmin only (or first-time seed via API)
+const createAdmin = catchAsync(async (req, res) => {
+  const { fullName, email, password, phone, role = 'admin' } = req.body;
+  if (!fullName || !email || !password) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'fullName, email and password are required.');
+  }
+  if (password.length < 8) throw new ApiError(httpStatus.BAD_REQUEST, 'Password must be at least 8 characters.');
+  if (!['admin', 'superadmin'].includes(role)) throw new ApiError(httpStatus.BAD_REQUEST, 'role must be admin or superadmin.');
+
+  const exists = await dB.admins.findOne({ email: email.toLowerCase().trim() });
+  if (exists) throw new ApiError(httpStatus.CONFLICT, 'An admin with this email already exists.');
+
+  const admin = await dB.admins.create({ fullName, email, password, phone: phone || '', role });
+  res.status(httpStatus.CREATED).json({ message: 'Admin account created.', admin: sanitizeAdmin(admin) });
+});
+
 // POST /admins/login
 const login = catchAsync(async (req, res) => {
   const { email, password } = req.body;
@@ -761,6 +777,7 @@ const listProducts = catchAsync(async (req, res) => {
 
 module.exports = {
   // Auth
+  createAdmin,
   login,
   getMe,
   updateMe,
