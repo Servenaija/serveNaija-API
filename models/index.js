@@ -6,6 +6,7 @@ const logger = require('../config/logger');
 const token    = require('./token');
 const customer = require('./customer');
 const provider = require('./provider');
+const admin    = require('./admin');
 
 // ── Feature models
 const booking      = require('./booking');
@@ -42,6 +43,7 @@ dB.mongo = mongooseInstance;
 dB.tokens    = token;
 dB.customers = customer;
 dB.providers = provider;
+dB.admins    = admin;
 
 // Features
 dB.bookings      = booking;
