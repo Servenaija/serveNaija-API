@@ -1,6 +1,6 @@
 const express = require('express');
 const { verifyToken } = require('../../middlewares/verify');
-const { isAdmin } = require('../../middlewares/isAdmin');
+const { isAdmin, isSuperAdmin, requirePermission } = require('../../middlewares/isAdmin');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 const adminController = require('../../controllers/admin.controller');
@@ -8,7 +8,7 @@ const adminController = require('../../controllers/admin.controller');
 const router = express.Router();
 router.use(allowedMethod);
 
-// ─── PUBLIC (no auth required) ────────────────────────────────────────────────
+// ─── PUBLIC ───────────────────────────────────────────────────────────────────
 router.route('/login')
   .post(adminController.login)
   .all(unAllowedMethod);
@@ -16,12 +16,7 @@ router.route('/login')
 // ─── Auth guard for all routes below ─────────────────────────────────────────
 router.use(verifyToken, isAdmin);
 
-// ─── Create admin (superadmin only) ──────────────────────────────────────────
-router.route('/create')
-  .post(adminController.createAdmin)
-  .all(unAllowedMethod);
-
-// ─── Admin Profile ────────────────────────────────────────────────────────────
+// ─── Admin Profile (any authenticated admin) ─────────────────────────────────
 router.route('/me')
   .get(adminController.getMe)
   .put(adminController.updateMe)
@@ -31,118 +26,144 @@ router.route('/change-password')
   .put(adminController.changePassword)
   .all(unAllowedMethod);
 
+// Returns the full list of possible permissions (used by frontend settings UI)
+router.route('/permissions/all')
+  .get(adminController.getAllPermissions)
+  .all(unAllowedMethod);
+
+// ─── Admin Team Management (superadmin only) ──────────────────────────────────
+router.route('/create')
+  .post(isSuperAdmin, adminController.createAdmin)
+  .all(unAllowedMethod);
+
+router.route('/team')
+  .get(isSuperAdmin, adminController.listAdmins)
+  .all(unAllowedMethod);
+
+router.route('/team/:id')
+  .get(isSuperAdmin, adminController.getAdminById)
+  .all(unAllowedMethod);
+
+router.route('/team/:id/permissions')
+  .put(isSuperAdmin, adminController.updateAdminPermissions)
+  .all(unAllowedMethod);
+
+router.route('/team/:id/toggle-active')
+  .put(isSuperAdmin, adminController.toggleAdminActive)
+  .all(unAllowedMethod);
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 router.route('/dashboard')
-  .get(adminController.getDashboard)
+  .get(requirePermission('dashboard'), adminController.getDashboard)
   .all(unAllowedMethod);
 
 // ─── Customers ────────────────────────────────────────────────────────────────
 router.route('/customers')
-  .get(adminController.listCustomers)
+  .get(requirePermission('customers'), adminController.listCustomers)
   .all(unAllowedMethod);
 
 router.route('/customers/:id')
-  .get(adminController.getCustomer)
+  .get(requirePermission('customers'), adminController.getCustomer)
   .all(unAllowedMethod);
 
 router.route('/customers/:id/ban')
-  .put(adminController.banCustomer)
+  .put(requirePermission('customers'), adminController.banCustomer)
   .all(unAllowedMethod);
 
 router.route('/customers/:id/bookings')
-  .get(adminController.getCustomerBookings)
+  .get(requirePermission('customers'), adminController.getCustomerBookings)
   .all(unAllowedMethod);
 
 router.route('/customers/:id/orders')
-  .get(adminController.getCustomerOrders)
+  .get(requirePermission('customers'), adminController.getCustomerOrders)
   .all(unAllowedMethod);
 
 router.route('/customers/:id/transactions')
-  .get(adminController.getCustomerTransactions)
+  .get(requirePermission('transactions'), adminController.getCustomerTransactions)
   .all(unAllowedMethod);
 
 // ─── Providers ────────────────────────────────────────────────────────────────
 router.route('/providers')
-  .get(adminController.listProviders)
+  .get(requirePermission('providers'), adminController.listProviders)
   .all(unAllowedMethod);
 
 router.route('/providers/:id')
-  .get(adminController.getProvider)
+  .get(requirePermission('providers'), adminController.getProvider)
   .all(unAllowedMethod);
 
 router.route('/providers/:id/ban')
-  .put(adminController.banProvider)
+  .put(requirePermission('providers'), adminController.banProvider)
   .all(unAllowedMethod);
 
 router.route('/providers/:id/bookings')
-  .get(adminController.getProviderBookings)
+  .get(requirePermission('providers'), adminController.getProviderBookings)
   .all(unAllowedMethod);
 
 router.route('/providers/:id/services')
-  .get(adminController.getProviderServices)
+  .get(requirePermission('providers'), adminController.getProviderServices)
   .all(unAllowedMethod);
 
 router.route('/providers/:id/transactions')
-  .get(adminController.getProviderTransactions)
+  .get(requirePermission('transactions'), adminController.getProviderTransactions)
   .all(unAllowedMethod);
 
 // ─── Bookings ─────────────────────────────────────────────────────────────────
 router.route('/bookings')
-  .get(adminController.listBookings)
+  .get(requirePermission('bookings'), adminController.listBookings)
   .all(unAllowedMethod);
 
 router.route('/bookings/:id')
-  .get(adminController.getBooking)
+  .get(requirePermission('bookings'), adminController.getBooking)
   .all(unAllowedMethod);
 
 // ─── KYC ─────────────────────────────────────────────────────────────────────
 router.route('/kyc')
-  .get(adminController.listKYC)
+  .get(requirePermission('kyc'), adminController.listKYC)
   .all(unAllowedMethod);
 
 router.route('/kyc/:id/approve')
-  .put(adminController.approveKYC)
+  .put(requirePermission('kyc'), adminController.approveKYC)
   .all(unAllowedMethod);
 
 router.route('/kyc/:id/reject')
-  .put(adminController.rejectKYC)
+  .put(requirePermission('kyc'), adminController.rejectKYC)
   .all(unAllowedMethod);
 
 // ─── Transactions ─────────────────────────────────────────────────────────────
 router.route('/transactions')
-  .get(adminController.listTransactions)
+  .get(requirePermission('transactions'), adminController.listTransactions)
   .all(unAllowedMethod);
 
 // ─── Notifications / Broadcast ────────────────────────────────────────────────
 router.route('/notifications')
-  .get(adminController.listNotifications)
+  .get(requirePermission('notifications'), adminController.listNotifications)
   .all(unAllowedMethod);
 
 router.route('/notifications/broadcast')
-  .post(adminController.broadcastNotification)
+  .post(requirePermission('notifications'), adminController.broadcastNotification)
   .all(unAllowedMethod);
 
 // ─── Agents ───────────────────────────────────────────────────────────────────
 router.route('/agents')
-  .get(adminController.listAgents)
+  .get(requirePermission('agents'), adminController.listAgents)
   .all(unAllowedMethod);
 
 // ─── Services ─────────────────────────────────────────────────────────────────
 router.route('/services')
-  .get(adminController.listServices)
+  .get(requirePermission('services'), adminController.listServices)
   .all(unAllowedMethod);
 
 // ─── Marketplace ──────────────────────────────────────────────────────────────
 router.route('/marketplace/orders')
-  .get(adminController.listOrders)
+  .get(requirePermission('marketplace'), adminController.listOrders)
   .all(unAllowedMethod);
 
 router.route('/marketplace/stores')
-  .get(adminController.listStores)
+  .get(requirePermission('marketplace'), adminController.listStores)
   .all(unAllowedMethod);
 
 router.route('/marketplace/products')
-  .get(adminController.listProducts)
+  .get(requirePermission('marketplace'), adminController.listProducts)
   .all(unAllowedMethod);
 
 module.exports = router;

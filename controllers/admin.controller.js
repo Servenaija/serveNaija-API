@@ -773,6 +773,67 @@ const listProducts = catchAsync(async (req, res) => {
   res.json({ products, total, page, limit, totalPages: Math.ceil(total / limit) });
 });
 
+// ─── ADMIN MANAGEMENT (superadmin only) ────────────────────────────────────
+const { ALL_PERMISSIONS } = require('../models/admin');
+
+// GET /admins/team — list all admins
+const listAdmins = catchAsync(async (req, res) => {
+  const admins = await dB.admins.find().select('-password -__v').sort({ createdAt: -1 });
+  res.json({ admins });
+});
+
+// GET /admins/team/:id
+const getAdminById = catchAsync(async (req, res) => {
+  const admin = await dB.admins.findById(req.params.id).select('-password -__v');
+  if (!admin) throw new ApiError(httpStatus.NOT_FOUND, 'Admin not found.');
+  res.json({ admin });
+});
+
+// PUT /admins/team/:id/permissions — update role and permissions
+const updateAdminPermissions = catchAsync(async (req, res) => {
+  const { permissions, role } = req.body;
+
+  // Cannot demote or edit yourself
+  if (req.params.id === req.user._id.toString()) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'You cannot edit your own role or permissions.');
+  }
+
+  const admin = await dB.admins.findById(req.params.id);
+  if (!admin) throw new ApiError(httpStatus.NOT_FOUND, 'Admin not found.');
+
+  if (role) {
+    if (!['admin', 'superadmin'].includes(role)) throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid role.');
+    admin.role = role;
+  }
+
+  if (permissions !== undefined) {
+    if (!Array.isArray(permissions)) throw new ApiError(httpStatus.BAD_REQUEST, 'permissions must be an array.');
+    const invalid = permissions.filter((p) => !ALL_PERMISSIONS.includes(p));
+    if (invalid.length) throw new ApiError(httpStatus.BAD_REQUEST, `Invalid permissions: ${invalid.join(', ')}`);
+    admin.permissions = permissions;
+  }
+
+  await admin.save();
+  res.json({ message: 'Admin permissions updated.', admin: sanitizeAdmin(admin) });
+});
+
+// PUT /admins/team/:id/toggle-active — activate or deactivate an admin
+const toggleAdminActive = catchAsync(async (req, res) => {
+  if (req.params.id === req.user._id.toString()) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'You cannot deactivate your own account.');
+  }
+  const admin = await dB.admins.findById(req.params.id);
+  if (!admin) throw new ApiError(httpStatus.NOT_FOUND, 'Admin not found.');
+  admin.isActive = !admin.isActive;
+  await admin.save();
+  res.json({ message: `Admin ${admin.isActive ? 'activated' : 'deactivated'}.`, isActive: admin.isActive });
+});
+
+// GET /admins/permissions/all — returns the list of all possible permissions
+const getAllPermissions = catchAsync(async (req, res) => {
+  res.json({ permissions: ALL_PERMISSIONS });
+});
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -818,4 +879,10 @@ module.exports = {
   listOrders,
   listStores,
   listProducts,
+  // Admin management (superadmin only)
+  listAdmins,
+  getAdminById,
+  updateAdminPermissions,
+  toggleAdminActive,
+  getAllPermissions,
 };
