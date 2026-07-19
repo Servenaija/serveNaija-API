@@ -203,6 +203,42 @@ const paystackWebhook = catchAsync(async (req, res) => {
   res.sendStatus(200);
 });
 
+const getTodayEarnings = catchAsync(async (req, res) => {
+  const startOfDay = new Date();
+  startOfDay.setHours(0, 0, 0, 0);
+
+  const endOfDay = new Date();
+  endOfDay.setHours(23, 59, 59, 999);
+
+  const result = await Transaction.aggregate([
+    {
+      $match: {
+        owner: req.user._id.toString(),
+        ownerType: 'provider',
+        type: 'credit',
+        status: 'completed',
+        createdAt: { $gte: startOfDay, $end: endOfDay },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: '$amount' },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const earnings = result[0]?.total || 0;
+  const transactionCount = result[0]?.count || 0;
+
+  res.json({
+    success: true,
+    todayEarnings: earnings,
+    transactionCount,
+  });
+});
+
 module.exports = {
   getWallet,
   listTransactions,
@@ -210,4 +246,5 @@ module.exports = {
   withdrawFunds,
   getBanks,
   paystackWebhook,
+  getTodayEarnings
 };

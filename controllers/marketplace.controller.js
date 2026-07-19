@@ -2,6 +2,8 @@ const httpStatus = require('http-status');
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
+const notificationService = require('../services/notification.service');
+const { getIo } = require('../utils/io');
 
 // ─────────────────────────────────────────
 // STORES
@@ -141,7 +143,39 @@ const searchProducts = catchAsync(async (req, res) => {
 });
 
 const getFeaturedProducts = catchAsync(async (req, res) => {
-  const products = await dB.products.find({ isActive: true }).sort({ soldCount: -1 }).limit(12).populate('store', 'name logo');
+  // Featured = products from stores owned by currently-promoted providers + top sellers
+  const now = new Date();
+  const promotedProviderIds = await dB.promotions
+    .find({ plan: { $in: ['ads_boost', 'featured_provider', 'verified_pro'] }, status: 'active', endDate: { $gt: now } })
+    .distinct('provider');
+
+  const promotedStoreIds = promotedProviderIds.length
+    ? await dB.stores.find({ provider: { $in: promotedProviderIds }, isActive: true }).distinct('_id')
+    : [];
+
+  // Promoted products first, then top sellers
+  const products = await dB.products.aggregate([
+    { $match: { isActive: true } },
+    {
+      $addFields: {
+        isPromoted: { $cond: [{ $in: ['$store', promotedStoreIds] }, 1, 0] },
+      },
+    },
+    { $sort: { isPromoted: -1, soldCount: -1 } },
+    { $limit: 12 },
+    {
+      $lookup: {
+        from: 'stores',
+        localField: 'store',
+        foreignField: '_id',
+        as: 'storeInfo',
+        pipeline: [{ $project: { name: 1, logo: 1 } }],
+      },
+    },
+    { $addFields: { store: { $arrayElemAt: ['$storeInfo', 0] } } },
+    { $project: { storeInfo: 0 } },
+  ]);
+
   res.json({ products });
 });
 
@@ -180,7 +214,7 @@ const createOrder = catchAsync(async (req, res) => {
     subtotal += product.price * item.quantity;
   }
 
-  const DELIVERY_FEE = 800;
+  const DELIVERY_FEE = Math.round(subtotal * 0.10); // 10% of subtotal
   const total = subtotal + DELIVERY_FEE;
 
   const order = await dB.orders.create({
@@ -232,6 +266,35 @@ const updateOrderStatus = catchAsync(async (req, res) => {
     { new: true }
   );
   if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found.');
+
+  // Real-time socket event to buyer
+  const io = getIo();
+  if (io) {
+    io.to(`user_${order.buyer.toString()}`).emit('order_updated', {
+      orderId: order._id.toString(),
+      status,
+      updatedAt: new Date(),
+    });
+  }
+
+  // Push notification to buyer
+  const statusMessages = {
+    processing: 'Your order is being prepared.',
+    shipped: 'Your order is on the way!',
+    delivered: 'Your order has been delivered.',
+    cancelled: 'Your order has been cancelled.',
+  };
+  if (statusMessages[status]) {
+    notificationService.sendPushNotification({
+      userId: order.buyer.toString(),
+      actorType: 'customer',
+      title: 'Order Update',
+      body: statusMessages[status],
+      type: 'booking',
+      data: { orderId: order._id.toString(), screen: 'order-details' },
+    }).catch(() => {});
+  }
+
   res.json({ order });
 });
 

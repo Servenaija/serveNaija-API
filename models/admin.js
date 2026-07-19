@@ -13,6 +13,7 @@ const ALL_PERMISSIONS = [
   'notifications',
   'agents',
   'services',
+  'categories',
   'marketplace',
   'chat',
   'calls',

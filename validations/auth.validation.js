@@ -47,128 +47,31 @@ const registerUser = {
 
 const registerProvider = {
   body: Joi.object().keys({
-    accountType: Joi.string().valid('provider', 'business').default('provider')
-      .messages({
-        'any.only': 'Account type must be either provider or business.',
-      }),
-    firstName: Joi.string().trim(),
-    lastName: Joi.string().trim(),
-    fullName: Joi.string().trim(),
+    firstName: Joi.string().trim().optional(),
+    lastName: Joi.string().trim().optional(),
+    fullName: Joi.string().trim().optional(),
     email: Joi.string().required().email().messages({
-      ...requiredForAllProviderAccounts('email'),
+      'any.required': 'Email is required.',
+      'string.empty': 'Email is required.',
       'string.email': 'Email must be a valid email address.',
     }),
-    phoneNumber: Joi.string().required().messages(requiredForAllProviderAccounts('phoneNumber')),
-    password: Joi.string().required().custom(password).messages(requiredForAllProviderAccounts('password')),
+    phoneNumber: Joi.string().required().messages({
+      'any.required': 'Phone number is required.',
+      'string.empty': 'Phone number is required.',
+    }),
+    password: Joi.string().required().custom(password).messages({
+      'any.required': 'Password is required.',
+      'string.empty': 'Password is required.',
+    }),
     referralCode: Joi.string().allow('', null).optional(),
-    agentCode: Joi.string().allow('', null).optional(),
-    category: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('category', 'business')),
-      otherwise: Joi.string().trim().required().messages(requiredForType('category', 'provider')),
-    }),
-    experience: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().trim().required().messages(requiredForType('experience', 'provider')),
-    }),
-    businessName: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('businessName', 'business')),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    description: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().trim().required().messages(requiredForType('description', 'provider')),
-    }),
-    registrationNumber: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('registrationNumber', 'business')),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    ownerFullName: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('ownerFullName', 'business')),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    businessEmail: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().email().required().messages({
-        ...requiredForType('businessEmail', 'business'),
-        'string.email': 'Business email must be a valid email address for business accounts.',
-      }),
-      otherwise: Joi.string().email().allow('', null).optional(),
-    }),
-    contactPhone: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('contactPhone', 'business')),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    businessDescription: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('businessDescription', 'business')),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    staffSize: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().trim().required().messages(requiredForType('staffSize', 'business')),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    state: Joi.string().trim().required().messages(requiredForAllProviderAccounts('state')),
-    city: Joi.string().trim().required().messages(requiredForAllProviderAccounts('city')),
-    area: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().trim().required().messages(requiredForType('area', 'provider')),
-    }),
-    address: Joi.string().trim().required().messages(requiredForAllProviderAccounts('address')),
-    landmark: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    radius: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    travelOutsideArea: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.boolean().optional(),
-      otherwise: Joi.boolean().optional(),
-    }),
-    photo: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().allow('', null).optional(),
-    }),
-    bio: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().allow('', null).optional(),
-      otherwise: Joi.string().trim().required().messages(requiredForType('bio', 'provider')),
-    }),
-    accountName: Joi.string().trim().required().messages(requiredForAllProviderAccounts('accountName')),
-    bankName: Joi.string().trim().required().messages(requiredForAllProviderAccounts('bankName')),
-    accountNumber: Joi.string().trim().pattern(/^\d{10}$/).required().messages({
-      ...requiredForAllProviderAccounts('accountNumber'),
-      'string.pattern.base': 'Account number must be exactly 10 digits.',
-    }),
-    selectedPlan: Joi.when('accountType', {
-      is: 'business',
-      then: Joi.string().valid('starter', 'growth', 'premium', 'enterprise').required().messages({
-        ...requiredForType('selectedPlan', 'business'),
-        'any.only': 'Selected plan must be one of starter, growth, premium, or enterprise for business accounts.',
-      }),
-      otherwise: Joi.string().valid('standard', 'verified').required().messages({
-        ...requiredForType('selectedPlan', 'provider'),
-        'any.only': 'Selected plan must be standard or verified for provider accounts.',
-      }),
-    }),
+   
+    
+   
     expoPushToken: Joi.string().optional(),
     confirmPassword: Joi.string().required().valid(Joi.ref('password'))
       .messages({
-        ...requiredForAllProviderAccounts('confirmPassword'),
+        'any.required': 'Confirm password is required.',
+        'string.empty': 'Confirm password is required.',
         'any.only': 'Confirm password must match password.',
       }),
   }),

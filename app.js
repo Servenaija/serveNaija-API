@@ -17,27 +17,14 @@ const { errorConverter, errorHandler } = require('./middlewares/error');
 const ApiError = require('./utils/ApiError');
 const { jsonHeader } = require('./middlewares/headers');
 const cron = require("node-cron");
-const sendVendorNotificationsJob = require("./job/sendVendorNotifications");
-const { sendMoneyForApprovedWithdrawals } = require('./job/processWithdrawals');
 
-const _safeVendorNotificationsJob = typeof sendVendorNotificationsJob === 'function'
-  ? sendVendorNotificationsJob
-  : () => console.warn('[cron] sendVendorNotificationsJob is not available (stub).');
 
-const _safeProcessWithdrawals = typeof sendMoneyForApprovedWithdrawals === 'function'
-  ? sendMoneyForApprovedWithdrawals
-  : async () => console.warn('[cron] sendMoneyForApprovedWithdrawals is not available (stub).');
+
 const indexRouterV1 = require('./routes/v1/');
 const Sentry = require("@sentry/node");
 
 const app = express();
 
-cron.schedule("0 8,9 * * *", () => {
-  console.log("Running scheduled vendor notification job (Africa/Lagos time)...");
-  _safeVendorNotificationsJob();
-}, {
-  timezone: "Africa/Lagos"
-});
 
 cron.schedule('*/5 * * * *', async () => {
   try {
@@ -50,10 +37,69 @@ cron.schedule('*/5 * * * *', async () => {
   }
 });
 
-// Run every 1 hour (at minute 0 of every hour)
-cron.schedule('0 * * * *', async () => {
-  console.log('\n[cron] Withdrawal processing job running at:', new Date().toISOString());
-  await _safeProcessWithdrawals();
+
+
+// Daily at midnight — expire promotions and clear cached fields
+cron.schedule('0 0 * * *', async () => {
+  try {
+    const { dB } = require('./models');
+    const now = new Date();
+
+    // ── Expire promotions ────────────────────────────────────────────────────
+    const expired = await dB.promotions.find({ status: 'active', endDate: { $lte: now } });
+    if (expired.length) {
+      const expiredIds = expired.map((p) => p._id);
+      await dB.promotions.updateMany({ _id: { $in: expiredIds } }, { status: 'expired' });
+
+      const affectedProviderIds = [...new Set(expired.map((p) => p.provider.toString()))];
+      for (const providerId of affectedProviderIds) {
+        const stillFeatured = await dB.promotions.findOne({
+          provider: providerId,
+          plan: { $in: ['featured_provider', 'verified_pro'] },
+          status: 'active',
+          endDate: { $gt: now },
+        });
+        const stillVerified = await dB.promotions.findOne({
+          provider: providerId,
+          plan: 'verified_pro',
+          status: 'active',
+          endDate: { $gt: now },
+        });
+        await dB.providers.findByIdAndUpdate(providerId, {
+          featuredUntil: stillFeatured ? stillFeatured.endDate : null,
+          isVerifiedPro: !!stillVerified,
+        });
+      }
+      console.log(`[cron] Expired ${expired.length} promotion(s).`);
+    }
+
+    // ── Notify providers whose subscription renews in 7 days ─────────────────
+    const sevenDaysFromNow = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    const oneDayBuffer = new Date(now.getTime() + 8 * 24 * 60 * 60 * 1000);
+
+    const expiringProviders = await dB.providers.find({
+      'subscription.isActive': true,
+      'subscription.renewalDate': { $gte: sevenDaysFromNow, $lt: oneDayBuffer },
+    }).select('_id fullName subscription.selectedPlan subscription.renewalDate').lean();
+
+    const notificationService = require('./services/notification.service');
+    for (const provider of expiringProviders) {
+      const days = Math.ceil((new Date(provider.subscription.renewalDate) - now) / (1000 * 60 * 60 * 24));
+      notificationService.sendPushNotification({
+        userId: provider._id.toString(),
+        actorType: 'provider',
+        title: 'Subscription Expiring Soon',
+        body: `Your ${provider.subscription.selectedPlan} plan expires in ${days} day${days === 1 ? '' : 's'}. Renew or upgrade to keep your benefits.`,
+        type: 'system',
+        data: { screen: 'promote' },
+      }).catch(() => {});
+    }
+    if (expiringProviders.length) {
+      console.log(`[cron] Sent expiry warnings to ${expiringProviders.length} provider(s).`);
+    }
+  } catch (err) {
+    console.error('[cron] Daily maintenance error:', err.message);
+  }
 });
 
 app.set('etag', false);

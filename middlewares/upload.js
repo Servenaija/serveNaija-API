@@ -21,9 +21,15 @@ module.exports = {
     { name: 'logo', maxCount: 1 },
     { name: 'selfie', maxCount: 1 },
     { name: 'document', maxCount: 1 },
+    { name: 'beforePhotos', maxCount: 5 },
+    { name: 'afterPhotos', maxCount: 5 },
   ]),
   uploadSingle: upload.single('image'),
   uploadMultiple: upload.array('images', 5),
+  uploadCompletionPhotos: upload.fields([
+    { name: 'beforePhotos', maxCount: 5 },
+    { name: 'afterPhotos', maxCount: 5 },
+  ]),
   uploadAny: upload.any(),
 };
 

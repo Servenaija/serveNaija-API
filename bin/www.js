@@ -5,6 +5,7 @@ const app = require('../app');
 const config = require('../config/auth');
 const logger = require('../config/logger');
 const { configureSocket } = require('../config/socket');
+const { setIo } = require('../utils/io');
 
 const normalizePort = (val) => {
   const port = parseInt(val, 10);
@@ -86,6 +87,9 @@ const io = new Server(server, {
 
 // Configure chat + call socket events
 configureSocket(io);
+
+// Register the io singleton so services can emit events without access to app
+setIo(io);
 
 // Expose io on app so controllers can emit events
 app.set('io', io);

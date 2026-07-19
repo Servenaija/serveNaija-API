@@ -7,25 +7,24 @@ const bookingRoute     = require('./booking.route');
 const notificationRoute = require('./notification.route');
 const chatRoute        = require('./chat.route');
 const callRoute        = require('./call.route');
-const kycRoute         = require('./kyc.route');
 const walletRoute      = require('./wallet.route');
 const marketplaceRoute = require('./marketplace.route');
 const agentRoute       = require('./agent.route');
 const httpStatus       = require('http-status');
 const cache            = require('../../utils/cache');
-
+const providerOnboardingRoute = require ('./providerOnboarding.routes');
 const router = express.Router();
 
 const defaultRoutes = [
   { path: '/auth',          route: authRoute },
   { path: '/admins',        route: adminRoute },
   { path: '/user',          route: userRoute },
+  { path: '/onboardingprovider',  route: providerOnboardingRoute},
   { path: '/provider',      route: providerRoute },
   { path: '/bookings',      route: bookingRoute },
   { path: '/notifications', route: notificationRoute },
   { path: '/chat',          route: chatRoute },
   { path: '/calls',         route: callRoute },
-  { path: '/kyc',           route: kycRoute },
   { path: '/wallet',        route: walletRoute },
   { path: '/marketplace',   route: marketplaceRoute },
   { path: '/agent',         route: agentRoute },

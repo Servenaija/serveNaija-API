@@ -3,6 +3,7 @@ const { verifyToken } = require('../../middlewares/verify');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 const chatController = require('../../controllers/chat.controller');
+const { uploadSingle } = require('../../middlewares/upload');
 
 const router = express.Router();
 router.use(allowedMethod);
@@ -22,6 +23,11 @@ router.route('/conversations/:id')
 router.route('/conversations/:id/messages')
   .get(verifyToken, chatController.listMessages)
   .post(verifyToken, chatController.sendMessage)
+  .all(unAllowedMethod);
+
+// Image message — multipart upload
+router.route('/conversations/:id/messages/image')
+  .post(verifyToken, uploadSingle, chatController.sendImageMessage)
   .all(unAllowedMethod);
 
 // Inbound webhook for external chat events

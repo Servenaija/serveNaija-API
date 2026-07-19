@@ -1,17 +1,20 @@
 const httpStatus = require('http-status');
 const axios = require('axios');
+const { v4: uuidv4 } = require('uuid');
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
 const notificationService = require('../services/notification.service');
+const { uploadObject } = require('../utils/aws.s3.bucket');
 
 // Helper to get sender info from req.user
 function getSenderInfo(user) {
-  const actorType = user.constructor.modelName === 'Provider' ? 'provider' : 'customer';
+  const modelName = user.constructor.modelName;
+  const actorType = modelName === 'Provider' ? 'provider' : modelName === 'Admin' ? 'admin' : 'customer';
   return {
     userId: user._id.toString(),
     actorType,
-    name: user.fullName || user.firstName || 'User',
+    name: user.fullName || user.firstName || 'Admin',
     avatar: user.profilePhoto || user.profile?.photo || null,
   };
 }
@@ -135,14 +138,17 @@ const listMessages = catchAsync(async (req, res) => {
   res.json({ messages: messages.reverse(), page: safePage, limit: safeLimit });
 });
 
-// POST /conversations/:id/messages
+// POST /conversations/:id/messages  — send text or pre-uploaded image URL
 const sendMessage = catchAsync(async (req, res) => {
   const sender = getSenderInfo(req.user);
-  const { text, imageUrl, type = 'text' } = req.body;
+  const { text, imageUrl, type } = req.body;
 
   if (!text && !imageUrl) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Message must have text or an image.');
   }
+
+  // Auto-detect type if not provided
+  const msgType = type || (imageUrl && !text ? 'image' : 'text');
 
   const conversation = await dB.conversations.findOne({
     _id: req.params.id,
@@ -158,7 +164,7 @@ const sendMessage = catchAsync(async (req, res) => {
     senderAvatar: sender.avatar,
     text: text || null,
     imageUrl: imageUrl || null,
-    type,
+    type: msgType,
     readBy: [sender.userId],
   });
 
@@ -174,24 +180,29 @@ const sendMessage = catchAsync(async (req, res) => {
     $set: unreadUpdates,
   });
 
-  // Emit via Socket.io (attached in www.js)
+  // Emit via Socket.io — broadcast to the conversation room and each participant's personal room
   const io = req.app.get('io');
   if (io) {
-    io.to(conversation._id.toString()).emit('new_message', message);
+    const convRoom = `conv_${conversation._id.toString()}`;
+    io.to(convRoom).emit('new_message', message);
+
+    // Also deliver directly to each participant's personal room so they receive
+    // the message even if they haven't joined the conversation room yet
+    for (const p of conversation.participants) {
+      io.to(`user_${p.userId}`).emit('new_message', message);
+    }
   }
 
-  // Push notification to all other participants
+  // Push notification + socket notification to all other participants (including admins)
   for (const p of otherParticipants) {
-    if (p.actorType !== 'admin') {
-      notificationService.sendPushNotification({
-        userId: p.userId,
-        actorType: p.actorType,
-        title: sender.name,
-        body: text || '📷 Photo',
-        type: 'chat',
-        data: { conversationId: conversation._id.toString(), screen: 'chat' },
-      }).catch(() => {});
-    }
+    notificationService.sendPushNotification({
+      userId: p.userId,
+      actorType: p.actorType,
+      title: sender.name,
+      body: text || '📷 Photo',
+      type: 'chat',
+      data: { conversationId: conversation._id.toString(), screen: 'chat' },
+    }).catch(() => {});
   }
 
   // Fire webhook if configured
@@ -238,6 +249,76 @@ const chatWebhook = catchAsync(async (req, res) => {
   res.json({ message });
 });
 
+// POST /conversations/:id/messages/image — upload image file and create message
+const sendImageMessage = catchAsync(async (req, res) => {
+  if (!req.file) throw new ApiError(httpStatus.BAD_REQUEST, 'Image file is required.');
+
+  const sender = getSenderInfo(req.user);
+  const conversation = await dB.conversations.findOne({
+    _id: req.params.id,
+    'participants.userId': sender.userId,
+  });
+  if (!conversation) throw new ApiError(httpStatus.NOT_FOUND, 'Conversation not found.');
+
+  // Upload to Cloudflare R2
+  const ext = req.file.mimetype.split('/')[1] || 'jpg';
+  const key = `chat/${conversation._id.toString()}/${uuidv4()}.${ext}`;
+  const upload = await uploadObject({
+    Bucket: process.env.R2_BUCKET_NAME,
+    Key: key,
+    Body: req.file.buffer,
+    ContentType: req.file.mimetype,
+  });
+
+  const imageUrl = upload.Location || `${process.env.R2_PUBLIC_URL}/${key}`;
+
+  // Reuse existing sendMessage logic by calling it internally
+  req.body = { imageUrl, type: 'image' };
+  // Build message directly (mirrors sendMessage logic)
+  const message = await dB.messages.create({
+    conversation: conversation._id,
+    senderId: sender.userId,
+    senderType: sender.actorType,
+    senderName: sender.name,
+    senderAvatar: sender.avatar,
+    text: null,
+    imageUrl,
+    type: 'image',
+    readBy: [sender.userId],
+  });
+
+  const otherParticipants = conversation.participants.filter((p) => p.userId !== sender.userId);
+  const unreadUpdates = {};
+  for (const p of otherParticipants) {
+    unreadUpdates[`unreadCounts.${p.userId}`] = (conversation.unreadCounts?.get(p.userId) || 0) + 1;
+  }
+  await dB.conversations.findByIdAndUpdate(conversation._id, {
+    lastMessage: { imageUrl, senderId: sender.userId, senderType: sender.actorType, timestamp: new Date() },
+    $set: unreadUpdates,
+  });
+
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`conv_${conversation._id.toString()}`).emit('new_message', message);
+    for (const p of conversation.participants) {
+      io.to(`user_${p.userId}`).emit('new_message', message);
+    }
+  }
+
+  for (const p of otherParticipants) {
+    notificationService.sendPushNotification({
+      userId: p.userId,
+      actorType: p.actorType,
+      title: sender.name,
+      body: '📷 Photo',
+      type: 'chat',
+      data: { conversationId: conversation._id.toString(), screen: 'chat' },
+    }).catch(() => {});
+  }
+
+  res.status(httpStatus.CREATED).json({ message });
+});
+
 // Cleanup resolved conversations (called by cron/admin)
 const cleanupResolvedConversations = catchAsync(async (req, res) => {
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
@@ -254,6 +335,7 @@ module.exports = {
   getConversation,
   listMessages,
   sendMessage,
+  sendImageMessage,
   deleteConversation,
   chatWebhook,
   cleanupResolvedConversations,

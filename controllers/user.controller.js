@@ -65,21 +65,70 @@ const updateNotificationSettings = catchAsync(async (req, res) => {
 
 // GET /providers — public list
 const listProviders = catchAsync(async (req, res) => {
-  const { category, state, city, search, page = 0, limit = 20, rating } = req.query;
-  const query = { isBanned: false };
+  const { category, state, city, search, page = 0, limit = 20, rating, lat, lng, radius } = req.query;
+  const safePage = Math.max(0, Number(page) || 0);
+  const safeLimit = Math.min(50, Math.max(1, Number(limit) || 20));
 
+  // ── Geo-radius query (when customer sends their coordinates) ─────────────
+  if (lat && lng) {
+    const userLat = parseFloat(lat);
+    const userLng = parseFloat(lng);
+    // radius param is in km (e.g. "10", "15", "20") — provider's chosen radius
+    // We use the PROVIDER's stored radius, but the customer can also filter by their desired km
+    const maxDistanceKm = radius ? Math.min(200, parseFloat(radius)) : 50;
+
+    const geoQuery = {
+      isBanned: false,
+      'geoLocation.coordinates': { $exists: true, $ne: [] },
+    };
+    if (category) geoQuery['service.category'] = { $regex: new RegExp(category, 'i') };
+
+    const skip = safePage * safeLimit;
+    const [providers, total] = await Promise.all([
+      dB.providers.find({
+        ...geoQuery,
+        geoLocation: {
+          $near: {
+            $geometry: { type: 'Point', coordinates: [userLng, userLat] },
+            $maxDistance: maxDistanceKm * 1000, // metres
+          },
+        },
+      })
+        .select('-password -__v -verificationToken -verificationTokenExpiresAt -bankDetails')
+        .skip(skip)
+        .limit(safeLimit)
+        .lean(),
+      dB.providers.countDocuments({
+        ...geoQuery,
+        geoLocation: {
+          $near: {
+            $geometry: { type: 'Point', coordinates: [userLng, userLat] },
+            $maxDistance: maxDistanceKm * 1000,
+          },
+        },
+      }),
+    ]);
+
+    return res.json({ providers, total, page: safePage, limit: safeLimit, totalPages: Math.ceil(total / safeLimit) });
+  }
+
+  // ── Standard text/category/city filter ───────────────────────────────────
+  const query = { isBanned: false };
   if (category) query['service.category'] = { $regex: new RegExp(category, 'i') };
   if (state) query['location.state'] = { $regex: new RegExp(state, 'i') };
   if (city) query['location.city'] = { $regex: new RegExp(city, 'i') };
-
-  const safePage = Math.max(0, Number(page) || 0);
-  const safeLimit = Math.min(50, Math.max(1, Number(limit) || 20));
 
   const [providers, total] = await Promise.all([
     dB.providers
       .find(query)
       .select('-password -__v -verificationToken -verificationTokenExpiresAt -bankDetails')
-      .sort({ 'subscription.isActive': -1, createdAt: -1 })
+      .sort({
+        // Featured (paid promotion) providers appear first
+        featuredUntil: -1,
+        isVerifiedPro: -1,
+        'subscription.isActive': -1,
+        createdAt: -1,
+      })
       .skip(safePage * safeLimit)
       .limit(safeLimit)
       .lean(),

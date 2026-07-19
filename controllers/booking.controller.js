@@ -1,9 +1,27 @@
 const httpStatus = require('http-status');
 const crypto = require('crypto');
+const { v4: uuidv4 } = require('uuid');
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
 const notificationService = require('../services/notification.service');
+const { getIo } = require('../utils/io');
+const { uploadObject } = require('../utils/aws.s3.bucket');
+const Booking = require('../models/booking');
+const mongoose = require('mongoose');
+
+// Emit booking_updated to both customer and provider personal rooms
+function emitBookingUpdate(booking) {
+  const io = getIo();
+  if (!io) return;
+  const payload = {
+    bookingId: booking._id.toString(),
+    status: booking.status,
+    updatedAt: new Date(),
+  };
+  io.to(`user_${booking.customer.toString()}`).emit('booking_updated', payload);
+  io.to(`user_${booking.provider.toString()}`).emit('booking_updated', payload);
+}
 
 // ─────────────────────────────────────────
 // CUSTOMER-FACING BOOKING ENDPOINTS
@@ -17,7 +35,7 @@ const createBooking = catchAsync(async (req, res) => {
   if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found.');
   if (provider.isBanned) throw new ApiError(httpStatus.BAD_REQUEST, 'This provider is unavailable.');
 
-  const platformFee = 500;
+  const platformFee = 1500;
   const totalAmount = Number(servicePrice) + platformFee;
 
   const booking = await dB.bookings.create({
@@ -97,6 +115,7 @@ const cancelBooking = catchAsync(async (req, res) => {
   booking.timeline.push({ status: 'cancelled', timestamp: new Date(), note: 'Cancelled by customer.' });
   await booking.save();
 
+  emitBookingUpdate(booking);
   notificationService.sendPushNotification({
     userId: booking.provider.toString(),
     actorType: 'provider',
@@ -140,14 +159,52 @@ const confirmComplete = catchAsync(async (req, res) => {
   booking.timeline.push({ status: 'completed', timestamp: new Date(), note: 'Customer confirmed completion.' });
   await booking.save();
 
+  emitBookingUpdate(booking);
+
+  // Credit provider wallet: provider receives serviceFee minus 10% platform commission
+  const providerNet = Math.round(booking.serviceFee * 0.90);
+  setImmediate(async () => {
+    try {
+      let wallet = await dB.wallets.findOne({ owner: booking.provider.toString() });
+      if (!wallet) {
+        wallet = await dB.wallets.create({ owner: booking.provider.toString(), ownerType: 'provider' });
+      }
+      const balanceBefore = wallet.balance;
+      wallet.balance += providerNet;
+      await wallet.save();
+
+      await dB.transactions.create({
+        wallet: wallet._id,
+        owner: booking.provider.toString(),
+        type: 'credit',
+        amount: providerNet,
+        balanceBefore,
+        balanceAfter: wallet.balance,
+        description: `Payment for booking #${booking._id.toString().slice(-6).toUpperCase()} (after 10% platform fee)`,
+        reference: `SN-BK-${uuidv4().replace(/-/g, '').slice(0, 12).toUpperCase()}`,
+        status: 'success',
+        metadata: {
+          bookingId: booking._id,
+          grossAmount: booking.serviceFee,
+          platformFeeRate: 0.10,
+          platformFeeAmount: booking.serviceFee - providerNet,
+        },
+        booking: booking._id,
+      });
+    } catch (err) {
+      // Non-fatal; log for retry
+      require('../config/logger').error('[booking] Wallet credit failed:', err.message);
+    }
+  });
+
   // Notify provider payment released
   notificationService.sendPushNotification({
     userId: booking.provider.toString(),
     actorType: 'provider',
-    title: 'Payment Released',
-    body: 'The customer has confirmed your service. Payment has been released to your wallet.',
+    title: 'Payment Released 💰',
+    body: `₦${providerNet.toLocaleString()} has been credited to your wallet.`,
     type: 'payment',
-    data: { bookingId: booking._id.toString() },
+    data: { bookingId: booking._id.toString(), screen: 'earnings' },
   }).catch(() => {});
 
   res.json({ message: 'Job confirmed. Payment released.', booking });
@@ -228,6 +285,7 @@ const acceptJob = catchAsync(async (req, res) => {
   booking.timeline.push({ status: 'accepted', timestamp: new Date() });
   await booking.save();
 
+  emitBookingUpdate(booking);
   notificationService.sendPushNotification({
     userId: booking.customer.toString(),
     actorType: 'customer',
@@ -253,6 +311,7 @@ const declineJob = catchAsync(async (req, res) => {
   booking.timeline.push({ status: 'declined', timestamp: new Date(), note: req.body.reason });
   await booking.save();
 
+  emitBookingUpdate(booking);
   notificationService.sendPushNotification({
     userId: booking.customer.toString(),
     actorType: 'customer',
@@ -278,6 +337,7 @@ const updateJobStatus = catchAsync(async (req, res) => {
   booking.timeline.push({ status, timestamp: new Date() });
   await booking.save();
 
+  emitBookingUpdate(booking);
   const statusMessages = {
     'on-the-way': 'Your provider is on the way.',
     arrived: 'Your provider has arrived.',
@@ -326,8 +386,32 @@ const completeJob = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Job must be in-progress to complete.');
   }
 
+  const uploadFiles = async (files, folder) => {
+    if (!Array.isArray(files) || files.length === 0) return [];
+
+    const uploads = await Promise.all(files.map(async (file) => {
+      const ext = file.mimetype.split('/')[1] || 'jpg';
+      const key = `bookings/${booking._id.toString()}/${folder}/${uuidv4()}.${ext}`;
+      const result = await uploadObject({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      });
+      return result.Location || `${process.env.R2_PUBLIC_URL}/${key}`;
+    }));
+
+    return uploads;
+  };
+
+  const beforeUploads = await uploadFiles(req.files?.beforePhotos, 'before');
+  const afterUploads = await uploadFiles(req.files?.afterPhotos, 'after');
+
+  const normalizedBefore = beforeUploads.length ? beforeUploads : (Array.isArray(beforePhotos) ? beforePhotos : []);
+  const normalizedAfter = afterUploads.length ? afterUploads : (Array.isArray(afterPhotos) ? afterPhotos : []);
+
   booking.status = 'completed';
-  booking.completionPhotos = { before: beforePhotos || [], after: afterPhotos || [] };
+  booking.completionPhotos = { before: normalizedBefore, after: normalizedAfter };
   booking.completionNotes = completionNotes || '';
   booking.completedAt = new Date();
   booking.timeline.push({ status: 'completed', timestamp: new Date(), note: 'Provider marked as completed.' });
@@ -376,6 +460,57 @@ const requestAdditionalPayment = catchAsync(async (req, res) => {
   res.json({ message: 'Additional payment request sent.', booking });
 });
 
+const getProviderJobStats = catchAsync(async (req, res) => {
+  try {
+    const providerId = req.user._id;
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const endOfDay = new Date();
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const [pending, active, completed, todayEarnings] = await Promise.all([
+      Booking.countDocuments({ provider: providerId, status: 'pending' }),
+      Booking.countDocuments({
+        provider: providerId,
+        status: { $in: ['accepted', 'on-the-way', 'arrived', 'assessment', 'in-progress'] },
+      }),
+      Booking.countDocuments({ provider: providerId, status: 'completed' }),
+      Booking.aggregate([
+        {
+          $match: {
+            provider: new mongoose.Types.ObjectId(providerId),
+            status: 'completed',
+            completedAt: { $gte: startOfDay, $lte: endOfDay },
+          },
+        },
+        {
+          $group: {
+            _id: null,
+            total: { $sum: '$totalAmount' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    res.json({
+      success: true,
+      pendingRequests: pending,
+      activeJobs: active,
+      completedJobs: completed,
+      todayEarnings: todayEarnings[0]?.total || 0,
+      todayJobs: todayEarnings[0]?.count || 0,
+    });
+  } catch (error) {
+    console.log('[getProviderJobStats] Error:', error.message);
+    console.log('[getProviderJobStats] Stack:', error.stack);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+
 module.exports = {
   createBooking,
   listBookings,
@@ -392,4 +527,5 @@ module.exports = {
   verifyStartCode,
   completeJob,
   requestAdditionalPayment,
+  getProviderJobStats
 };

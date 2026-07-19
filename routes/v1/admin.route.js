@@ -13,6 +13,14 @@ router.route('/login')
   .post(adminController.login)
   .all(unAllowedMethod);
 
+// Public: anyone can list active categories (providers/customers need them)
+router.route('/categories/public')
+  .get((req, res, next) => {
+    req.query.activeOnly = 'true';
+    return adminController.listCategories(req, res, next);
+  })
+  .all(unAllowedMethod);
+
 // ─── Auth guard for all routes below ─────────────────────────────────────────
 router.use(verifyToken, isAdmin);
 
@@ -164,6 +172,31 @@ router.route('/marketplace/stores')
 
 router.route('/marketplace/products')
   .get(requirePermission('marketplace'), adminController.listProducts)
+  .all(unAllowedMethod);
+
+router.route('/calls')
+  .get(verifyToken, isAdmin, adminController.listCalls)
+  .all(unAllowedMethod);
+
+// ─── Promotions ──────────────────────────────────────────────────────────────
+router.route('/promotions')
+  .get(requirePermission('categories'), adminController.listPromotions)
+  .all(unAllowedMethod);
+
+router.route('/promotions/:id/cancel')
+  .put(requirePermission('categories'), adminController.cancelPromotion)
+  .all(unAllowedMethod);
+
+// ─── Categories ───────────────────────────────────────────────────────────────
+router.route('/categories')
+  .get(adminController.listCategories)
+  .post(requirePermission('categories'), adminController.createCategory)
+  .all(unAllowedMethod);
+
+router.route('/categories/:id')
+  .get(adminController.getCategory)
+  .put(requirePermission('categories'), adminController.updateCategory)
+  .delete(requirePermission('categories'), adminController.deleteCategory)
   .all(unAllowedMethod);
 
 module.exports = router;

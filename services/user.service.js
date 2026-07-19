@@ -37,102 +37,7 @@ const normalizeRegistrationPayload = (userBody = {}) => {
   return normalized;
 };
 
-const toProviderDocumentShape = (payload = {}) => {
-  const provider = { ...payload };
-  const inferredAccountType = payload.accountType || (payload.registrationNumber ? 'business' : 'provider');
 
-  provider.accountType = inferredAccountType;
-
-  provider.service = {
-    category: payload.category || payload.service?.category || '',
-    experience: payload.experience || payload.service?.experience || '',
-    businessName: payload.businessName || payload.service?.businessName || '',
-    description: payload.description || payload.service?.description || '',
-  };
-
-  provider.location = {
-    state: payload.state || payload.location?.state || '',
-    city: payload.city || payload.location?.city || '',
-    area: payload.area || payload.location?.area || '',
-    address: payload.address || payload.location?.address || '',
-    radius: payload.radius || payload.location?.radius || '10KM',
-    travelOutsideArea:
-      typeof payload.travelOutsideArea === 'boolean'
-        ? payload.travelOutsideArea
-        : payload.location?.travelOutsideArea ?? true,
-    coordinates: {
-      latitude: payload.latitude || payload.location?.coordinates?.latitude || null,
-      longitude: payload.longitude || payload.location?.coordinates?.longitude || null,
-    },
-  };
-
-  provider.profile = {
-    photo: payload.photo || payload.profile?.photo || null,
-    bio: payload.bio || payload.profile?.bio || '',
-  };
-
-  provider.business = {
-    registrationNumber:
-      payload.registrationNumber || payload.business?.registrationNumber || '',
-    ownerFullName: payload.ownerFullName || payload.business?.ownerFullName || '',
-    businessEmail:
-      (payload.businessEmail || payload.business?.businessEmail || '').toLowerCase(),
-    contactPhone: payload.contactPhone || payload.business?.contactPhone || '',
-    businessDescription:
-      payload.businessDescription || payload.business?.businessDescription || '',
-    staffSize: payload.staffSize || payload.business?.staffSize || '',
-    landmark:
-      payload.landmark || payload.location?.landmark || payload.business?.landmark || '',
-  };
-
-  provider.bankDetails = {
-    accountName: payload.accountName || payload.bankDetails?.accountName || '',
-    bankName: payload.bankName || payload.bankDetails?.bankName || '',
-    accountNumber: payload.accountNumber || payload.bankDetails?.accountNumber || '',
-    isVerified: payload.bankDetails?.isVerified || false,
-  };
-
-  provider.subscription = {
-    selectedPlan:
-      payload.selectedPlan || payload.subscription?.selectedPlan || 'verified',
-    amountPaid: payload.subscription?.amountPaid || 0,
-    currency: payload.subscription?.currency || 'NGN',
-    paidAt: payload.subscription?.paidAt || null,
-    renewalDate: payload.subscription?.renewalDate || null,
-    isActive: payload.subscription?.isActive || false,
-  };
-
-  provider.referralCode = payload.referralCode || payload.agentCode || null;
-
-  delete provider.category;
-  delete provider.experience;
-  delete provider.businessName;
-  delete provider.description;
-  delete provider.state;
-  delete provider.city;
-  delete provider.area;
-  delete provider.address;
-  delete provider.radius;
-  delete provider.travelOutsideArea;
-  delete provider.photo;
-  delete provider.bio;
-  delete provider.accountName;
-  delete provider.bankName;
-  delete provider.accountNumber;
-  delete provider.selectedPlan;
-  delete provider.latitude;
-  delete provider.longitude;
-  delete provider.agentCode;
-  delete provider.registrationNumber;
-  delete provider.ownerFullName;
-  delete provider.businessEmail;
-  delete provider.contactPhone;
-  delete provider.businessDescription;
-  delete provider.staffSize;
-  delete provider.landmark;
-
-  return provider;
-};
 
 const isEmailTaken = async (email, actor = 'customer', excludeUserId = null) => {
   const Model = actor === 'provider' ? dB.providers : dB.customers;
@@ -171,8 +76,7 @@ const createProvider = async (userBody) => {
   }
 
   payload.password = bcrypt.hashSync(payload.password, 12);
-  const providerPayload = toProviderDocumentShape(payload);
-  return dB.providers.create(providerPayload);
+  return dB.providers.create(payload);
 };
 
 const queryUsers = async (limit = 10, page = 0, where = {}, actor = 'customer') => {

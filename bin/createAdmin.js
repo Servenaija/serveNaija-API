@@ -14,8 +14,8 @@ const { mongooseP } = require('../config/auth');
 const Admin = require('../models/admin');
 
 const fullName = process.env.ADMIN_NAME     || 'Super Admin';
-const email    = process.env.ADMIN_EMAIL    || 'admin@servenaija.ng';
-const password = process.env.ADMIN_PASSWORD || 'Admin@1234';
+const email    = process.env.ADMIN_EMAIL    || 'support@servenaija.com';
+const password = process.env.ADMIN_PASSWORD || 'Servenaija@2026';
 const role     = process.env.ADMIN_ROLE     || 'superadmin';
 const phone    = process.env.ADMIN_PHONE    || '';
 

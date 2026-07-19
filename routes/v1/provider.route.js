@@ -66,4 +66,23 @@ router.route('/earnings')
   .get(verifyToken, providerController.getEarnings)
   .all(unAllowedMethod);
 
+// Promotions / Featured plans
+router.route('/promotion')
+  .get(verifyToken, providerController.getMyPromotions)
+  .post(verifyToken, providerController.purchasePromotion)
+  .all(unAllowedMethod);
+
+// Subscription plans + upgrade
+router.route('/subscription/plans')
+  .get(verifyToken, providerController.getSubscriptionPlans)
+  .all(unAllowedMethod);
+
+router.route('/subscription/activate')
+  .post(verifyToken, providerController.manageSubscription)
+  .all(unAllowedMethod);
+
+router.route('/subscription/upgrade')
+  .post(verifyToken, (req, res, next) => { req.body.isUpgrade = true; next(); }, providerController.manageSubscription)
+  .all(unAllowedMethod);
+
 module.exports = router;

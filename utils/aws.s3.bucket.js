@@ -1,40 +1,39 @@
-const AWS = require('aws-sdk');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const dotenv = require('dotenv');
+
 dotenv.config();
 
-// Configure AWS SDK please do nottouch
-// AWS.config.update({
-//   region: process.env.AWS_REGION,
-//   accessKeyId: process.env.AWS_ACCESS_KEY,
-//   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
-// });
+const endpoint = process.env.R2_ACCOUNT_ID
+  ? `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`
+  : undefined;
+const publicUrl = process.env.R2_PUBLIC_URL || process.env.R2_PUBLIC_URL_BASE;
 
-// // Create S3 instance with explicit API version
-// const s3 = new AWS.S3({
-//   apiVersion: '2006-03-01',
-//   signatureVersion: 'v4'
-// });
-
-// // Verify the S3 instance has the upload method
-// console.log('S3 upload method exists:', typeof s3.upload === 'function');
-
-// module.exports = s3;
-
-
-
-
-
-// Configure AWS SDK for Cloudflare R2
-const s3 = new AWS.S3({
-  apiVersion: '2006-03-01',
-  region: 'auto', // R2 ignores region
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, // your Cloudflare account ID
-  accessKeyId: process.env.R2_ACCESS_KEY, // R2 Access Key
-  secretAccessKey: process.env.R2_SECRET_KEY, // R2 Secret Key
-  signatureVersion: 'v4',
+const s3Client = new S3Client({
+  region: 'auto',
+  endpoint,
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY,
+    secretAccessKey: process.env.R2_SECRET_KEY,
+  },
 });
 
-// Verify upload method exists
-console.log('S3 upload method exists:', typeof s3.upload === 'function');
+const uploadObject = async ({ Bucket, Key, Body, ContentType }) => {
+  await s3Client.send(
+    new PutObjectCommand({
+      Bucket,
+      Key,
+      Body,
+      ContentType,
+    })
+  );
 
-module.exports = s3;
+  return {
+    Key,
+    Location: publicUrl ? `${publicUrl}/${Key}` : undefined,
+  };
+};
+
+module.exports = {
+  s3Client,
+  uploadObject,
+};

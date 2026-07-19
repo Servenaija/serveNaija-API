@@ -125,7 +125,23 @@ const rejectCall = catchAsync(async (req, res) => {
   const io = req.app.get('io');
   if (io) {
     io.to(`user_${call.initiator}`).emit('call_rejected', { callId: call._id.toString() });
+    // Also emit call_missed so the initiator's app shows a missed call banner
+    io.to(`user_${call.initiator}`).emit('call_missed', {
+      callId: call._id.toString(),
+      calleeId: call.recipient,
+    });
   }
+
+  // Push notification for missed call (the initiator's device may be backgrounded)
+  const rejector = getSenderInfo(req.user);
+  notificationService.sendPushNotification({
+    userId: call.initiator,
+    actorType: call.initiatorType,
+    title: 'Missed Call',
+    body: `${rejector.name} declined your call.`,
+    type: 'call',
+    data: { callId: call._id.toString(), screen: 'calls' },
+  }).catch(() => {});
 
   res.json({ message: 'Call rejected.' });
 });

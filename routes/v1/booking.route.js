@@ -3,6 +3,7 @@ const { verifyToken } = require('../../middlewares/verify');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 const validate = require('../../middlewares/validate');
+const { uploadCompletionPhotos } = require('../../middlewares/upload');
 const bookingController = require('../../controllers/booking.controller');
 const bookingValidation = require('../../validations/booking.validation');
 
@@ -61,11 +62,15 @@ router.route('/jobs/:id/start-code/verify')
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/complete')
-  .post(verifyToken, validate(bookingValidation.completeJob), bookingController.completeJob)
+  .post(verifyToken, uploadCompletionPhotos, validate(bookingValidation.completeJob), bookingController.completeJob)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/additional-payment')
   .post(verifyToken, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
+  .all(unAllowedMethod);
+
+router.route('/jobs/stats')
+  .get(verifyToken, bookingController.getProviderJobStats)
   .all(unAllowedMethod);
 
 module.exports = router;

@@ -33,6 +33,8 @@ const notificationSchema = new mongoose.Schema(
 );
 
 notificationSchema.index({ recipient: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ recipient: 1, type: 1, createdAt: -1 });  // filter by type
+notificationSchema.index({ recipientType: 1, createdAt: -1 });       // admin queries
 // Auto-expire notifications after 90 days
 notificationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 * 90 });
 

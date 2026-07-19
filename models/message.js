@@ -29,5 +29,6 @@ const messageSchema = new mongoose.Schema(
 );
 
 messageSchema.index({ conversation: 1, createdAt: -1 });
+messageSchema.index({ conversation: 1, deletedAt: 1, createdAt: -1 }); // paginated message lists
 
 module.exports = mongoose.model('Message', messageSchema);

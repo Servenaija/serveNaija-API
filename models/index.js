@@ -23,9 +23,22 @@ const review       = require('./review');
 const agent        = require('./agent');
 const call         = require('./call');
 const kyc          = require('./kyc');
+const category     = require('./category');
+const promotion    = require('./promotion');
 
 mongoose.set('strictQuery', false);
-const mongooseInstance = mongoose.connect(mongooseP.url);
+
+const mongoOptions = {
+  // Connection pool: support ~1M users through horizontal scaling
+  maxPoolSize: 50,        // max concurrent MongoDB connections per Node process
+  minPoolSize: 5,         // keep minimum connections warm
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  // Ensure indexes are created on startup
+  autoIndex: process.env.NODE_ENV !== 'production', // disable in prod (run migrations instead)
+};
+
+const mongooseInstance = mongoose.connect(mongooseP.url, mongoOptions);
 const dB = {};
 
 mongooseInstance
@@ -58,6 +71,8 @@ dB.products      = product;
 dB.orders        = order;
 dB.reviews       = review;
 dB.agents        = agent;
+dB.categories    = category;
+dB.promotions    = promotion;
 dB.calls         = call;
 dB.kyc           = kyc;
 

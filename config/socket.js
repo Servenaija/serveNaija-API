@@ -47,6 +47,8 @@ function configureSocket(io) {
     if (userId) {
       onlineUsers.set(userId, socket.id);
       socket.join(`user_${userId}`);
+      // Notify others that this user is now online
+      socket.broadcast.emit('user_online', { userId });
     }
 
     // Join a chat conversation room
@@ -66,7 +68,11 @@ function configureSocket(io) {
     });
 
     socket.on('disconnect', () => {
-      if (userId) onlineUsers.delete(userId);
+      if (userId) {
+        onlineUsers.delete(userId);
+        // Notify others that this user went offline
+        socket.broadcast.emit('user_offline', { userId });
+      }
     });
   });
 

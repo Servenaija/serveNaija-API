@@ -39,4 +39,8 @@ router.route('/webhook/paystack')
   .post(walletController.paystackWebhook)
   .all(unAllowedMethod);
 
-module.exports = router;
+router.route('/today/earning')
+  .get(walletController.getTodayEarnings)
+  .all(unAllowedMethod);
+
+  module.exports = router;

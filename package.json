@@ -27,6 +27,7 @@
   },
   "homepage": "https://github.com/ServeNaija/servenaija-API#readme",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1085.0",
     "@sentry/node": "^10.51.0",
     "@sentry/profiling-node": "^10.51.0",
     "agora-access-token": "^2.0.4",

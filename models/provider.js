@@ -1,3 +1,4 @@
+// providerModel.js
 const mongoose = require('mongoose');
 
 const providerSchema = new mongoose.Schema(
@@ -39,7 +40,6 @@ const providerSchema = new mongoose.Schema(
 		accountType: {
 			type: String,
 			enum: ['provider', 'business'],
-			default: 'provider',
 			index: true,
 		},
 		referralCode: {
@@ -92,6 +92,7 @@ const providerSchema = new mongoose.Schema(
 			},
 			radius: {
 				type: String,
+				enum: ['5KM', '10KM', '15KM', '20KM', 'Anywhere in my city'],  
 				default: '10KM',
 			},
 			travelOutsideArea: {
@@ -180,37 +181,16 @@ const providerSchema = new mongoose.Schema(
 				default: false,
 			},
 		},
-		kyc: {
-			status: {
-				type: String,
-				enum: ['not_started', 'pending', 'approved', 'rejected'],
-				default: 'not_started',
-			},
-			documentUrl: {
-				type: String,
-				trim: true,
-				default: null,
-			},
-			selfieUrl: {
-				type: String,
-				trim: true,
-				default: null,
-			},
-			reviewedAt: {
-				type: Date,
-				default: null,
-			},
-			rejectionReason: {
-				type: String,
-				trim: true,
-				default: null,
-			},
+		// Simplified KYC - just a boolean
+		kycVerified: {
+			type: Boolean,
+			default: false,
 		},
 		subscription: {
 			selectedPlan: {
 				type: String,
-				enum: ['standard', 'verified', 'starter', 'growth', 'premium', 'enterprise'],
-				default: 'verified',
+				enum: ['standard','not-started', 'verified', 'starter', 'growth', 'premium', 'enterprise'],
+				// default: '',
 			},
 			amountPaid: {
 				type: Number,
@@ -237,6 +217,20 @@ const providerSchema = new mongoose.Schema(
 			type: String,
 			trim: true,
 			default: null,
+		},
+		featuredUntil: {
+			type: Date,
+			default: null,
+			index: true,
+		},
+		isVerifiedPro: {
+			type: Boolean,
+			default: false,
+			index: true,
+		},
+		geoLocation: {
+			type: { type: String, enum: ['Point'], default: 'Point' },
+			coordinates: { type: [Number], default: undefined },
 		},
 		isEmailVerified: {
 			type: Boolean,
@@ -265,12 +259,12 @@ const providerSchema = new mongoose.Schema(
 );
 
 providerSchema.index({ createdAt: -1 });
-// Compound indexes for high-volume queries
-providerSchema.index({ accountType: 1, createdAt: -1 });             // filter by type
-providerSchema.index({ 'service.category': 1, createdAt: -1 });      // category search
-providerSchema.index({ 'location.state': 1, 'location.city': 1 });   // geo filtering
-providerSchema.index({ isBanned: 1, accountType: 1, createdAt: -1 }); // admin listing
-providerSchema.index({ 'kyc.status': 1, createdAt: -1 });             // KYC review queue
-providerSchema.index({ 'subscription.isActive': 1, accountType: 1 }); // active subscriptions
+providerSchema.index({ accountType: 1, createdAt: -1 });
+providerSchema.index({ 'service.category': 1, createdAt: -1 });
+providerSchema.index({ 'location.state': 1, 'location.city': 1 });
+providerSchema.index({ isBanned: 1, accountType: 1, createdAt: -1 });
+providerSchema.index({ kycVerified: 1, createdAt: -1 });
+providerSchema.index({ 'subscription.isActive': 1, accountType: 1 });
+providerSchema.index({ geoLocation: '2dsphere' });
 
 module.exports = mongoose.model('Provider', providerSchema);

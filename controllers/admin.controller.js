@@ -834,6 +834,163 @@ const getAllPermissions = catchAsync(async (req, res) => {
   res.json({ permissions: ALL_PERMISSIONS });
 });
 
+// GET /admins/calls — list all call logs
+const listCalls = catchAsync(async (req, res) => {
+  const { status, type, page = 0, limit = 50 } = req.query;
+  const query = {};
+  if (status) query.status = status;
+  if (type) query.type = type;
+
+  const calls = await dB.calls
+    .find(query)
+    .sort({ createdAt: -1 })
+    .skip(Number(page) * Number(limit))
+    .limit(Number(limit));
+
+  const total = await dB.calls.countDocuments(query);
+
+  // Enrich with user names
+  const enriched = await Promise.all(
+    calls.map(async (c) => {
+      const InitiatorModel = c.initiatorType === 'provider' ? dB.providers : dB.customers;
+      const RecipientModel = c.recipientType === 'provider' ? dB.providers : dB.customers;
+      const [initiator, recipient] = await Promise.all([
+        InitiatorModel.findById(c.initiator).select('fullName phoneNumber').lean(),
+        RecipientModel.findById(c.recipient).select('fullName phoneNumber').lean(),
+      ]);
+      return {
+        _id: c._id,
+        initiator: c.initiator,
+        initiatorType: c.initiatorType,
+        initiatorName: initiator?.fullName || 'Unknown',
+        initiatorPhone: initiator?.phoneNumber || '',
+        recipient: c.recipient,
+        recipientType: c.recipientType,
+        recipientName: recipient?.fullName || 'Unknown',
+        recipientPhone: recipient?.phoneNumber || '',
+        type: c.type,
+        status: c.status,
+        duration: c.duration,
+        startedAt: c.startedAt,
+        endedAt: c.endedAt,
+        createdAt: c.createdAt,
+      };
+    })
+  );
+
+  res.json({ calls: enriched, total, page: Number(page), limit: Number(limit) });
+});
+
+// ─── Promotions ───────────────────────────────────────────────────────────────
+
+// GET /admins/promotions
+const listPromotions = catchAsync(async (req, res) => {
+  const { status, plan, page, limit, skip } = paginationParams(req.query);
+  const query = {};
+  if (req.query.status) query.status = req.query.status;
+  if (req.query.plan) query.plan = req.query.plan;
+
+  const [promotions, total] = await Promise.all([
+    dB.promotions
+      .find(query)
+      .populate('provider', 'fullName email service.category')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    dB.promotions.countDocuments(query),
+  ]);
+  res.json({ promotions, total, page, limit });
+});
+
+// PUT /admins/promotions/:id/cancel
+const cancelPromotion = catchAsync(async (req, res) => {
+  const promotion = await dB.promotions.findByIdAndUpdate(
+    req.params.id,
+    { status: 'cancelled' },
+    { new: true }
+  );
+  if (!promotion) throw new ApiError(httpStatus.NOT_FOUND, 'Promotion not found.');
+
+  // Clear cached fields if needed
+  await dB.providers.findByIdAndUpdate(promotion.provider, {
+    featuredUntil: null,
+    isVerifiedPro: false,
+  });
+  res.json({ message: 'Promotion cancelled.', promotion });
+});
+
+// ─── Categories ───────────────────────────────────────────────────────────────
+
+// GET /admins/categories
+const listCategories = catchAsync(async (req, res) => {
+  const { activeOnly } = req.query;
+  const query = {};
+  if (activeOnly === 'true') query.isActive = true;
+  const categories = await dB.categories.find(query).sort({ name: 1 }).lean();
+  res.json({ categories });
+});
+
+// POST /admins/categories
+const createCategory = catchAsync(async (req, res) => {
+  const { name, description, icon, color } = req.body;
+
+  if (!name) throw new ApiError(httpStatus.BAD_REQUEST, 'Category name is required.');
+
+  const existing = await dB.categories.findOne({ name: name.trim() });
+  if (existing) throw new ApiError(httpStatus.CONFLICT, 'A category with this name already exists.');
+
+  const category = await dB.categories.create({
+    name: name.trim(),
+    description: description?.trim() || '',
+    icon: icon || 'Zap',
+    color: color || '#165B43',
+    createdBy: req.user._id,
+  });
+
+  res.status(httpStatus.CREATED).json({ category });
+});
+
+// GET /admins/categories/:id
+const getCategory = catchAsync(async (req, res) => {
+  const category = await dB.categories.findById(req.params.id);
+  if (!category) throw new ApiError(httpStatus.NOT_FOUND, 'Category not found.');
+  res.json({ category });
+});
+
+// PUT /admins/categories/:id
+const updateCategory = catchAsync(async (req, res) => {
+  const { name, description, icon, color, isActive } = req.body;
+  const updates = {};
+
+  if (name !== undefined) updates.name = name.trim();
+  if (description !== undefined) updates.description = description.trim();
+  if (icon !== undefined) updates.icon = icon;
+  if (color !== undefined) updates.color = color;
+  if (isActive !== undefined) updates.isActive = Boolean(isActive);
+
+  if (updates.name) {
+    const conflict = await dB.categories.findOne({
+      name: updates.name,
+      _id: { $ne: req.params.id },
+    });
+    if (conflict)
+      throw new ApiError(httpStatus.CONFLICT, 'Another category with this name already exists.');
+  }
+
+  const category = await dB.categories.findByIdAndUpdate(req.params.id, updates, { new: true });
+  if (!category) throw new ApiError(httpStatus.NOT_FOUND, 'Category not found.');
+
+  res.json({ category });
+});
+
+// DELETE /admins/categories/:id
+const deleteCategory = catchAsync(async (req, res) => {
+  const category = await dB.categories.findByIdAndDelete(req.params.id);
+  if (!category) throw new ApiError(httpStatus.NOT_FOUND, 'Category not found.');
+  res.json({ message: 'Category deleted.' });
+});
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -879,6 +1036,17 @@ module.exports = {
   listOrders,
   listStores,
   listProducts,
+  // Calls
+  listCalls,
+  // Categories
+  listCategories,
+  createCategory,
+  getCategory,
+  updateCategory,
+  deleteCategory,
+  // Promotions
+  listPromotions,
+  cancelPromotion,
   // Admin management (superadmin only)
   listAdmins,
   getAdminById,

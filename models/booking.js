@@ -69,7 +69,7 @@ const bookingSchema = new mongoose.Schema(
 
     // Payment
     serviceFee: { type: Number, default: 0 },
-    platformFee: { type: Number, default: 500 },
+    platformFee: { type: Number, default: 1500 },
     totalAmount: { type: Number, default: 0 },
     paymentStatus: {
       type: String,

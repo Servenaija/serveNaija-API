@@ -33,6 +33,8 @@ const transactionSchema = new mongoose.Schema(
 );
 
 transactionSchema.index({ owner: 1, type: 1, createdAt: -1 });
+transactionSchema.index({ owner: 1, status: 1, createdAt: -1 });     // filter by status
+transactionSchema.index({ booking: 1 }, { sparse: true });            // lookup by booking
 transactionSchema.index({ reference: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Transaction', transactionSchema);
