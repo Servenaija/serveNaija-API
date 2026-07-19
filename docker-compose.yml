@@ -1,0 +1,56 @@
+# version: '3.8'
+
+# services:
+#   backend:
+#     build:
+#       context: .
+#       dockerfile: Dockerfile
+#     container_name: maje-backend
+#     restart: always
+#     expose:
+#       - "7227"
+#     environment:
+#       - NODE_ENV=production
+    
+
+#   nginx:
+#     image: nginx:alpine
+#     container_name: maje-nginx
+#     restart: always
+#     ports:
+#       - "80:80"
+#       - "443:443"
+#     volumes:
+#       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+#       - /etc/letsencrypt:/etc/letsencrypt:ro
+#     depends_on:
+#       - backend
+
+# volumes:
+#   maje_mongo_data:
+
+version: '3.8'
+services:
+  backend:
+    build: .
+    container_name: maje-backend
+    restart: always
+    expose:
+      - "7227"
+    networks:
+      - maje_network
+
+  nginx:
+    image: nginx:alpine
+    container_name: maje-nginx
+    restart: always
+    expose:
+      - "80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - maje_network
+
+networks:
+  maje_network:
+    external: true
