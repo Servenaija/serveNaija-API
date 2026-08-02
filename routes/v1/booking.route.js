@@ -69,8 +69,5 @@ router.route('/jobs/:id/additional-payment')
   .post(verifyToken, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
   .all(unAllowedMethod);
 
-router.route('/jobs/stats')
-  .get(verifyToken, bookingController.getProviderJobStats)
-  .all(unAllowedMethod);
 
 module.exports = router;

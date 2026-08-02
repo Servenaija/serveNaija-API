@@ -460,55 +460,7 @@ const requestAdditionalPayment = catchAsync(async (req, res) => {
   res.json({ message: 'Additional payment request sent.', booking });
 });
 
-const getProviderJobStats = catchAsync(async (req, res) => {
-  try {
-    const providerId = req.user._id;
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-
-    const endOfDay = new Date();
-    endOfDay.setHours(23, 59, 59, 999);
-
-    const [pending, active, completed, todayEarnings] = await Promise.all([
-      Booking.countDocuments({ provider: providerId, status: 'pending' }),
-      Booking.countDocuments({
-        provider: providerId,
-        status: { $in: ['accepted', 'on-the-way', 'arrived', 'assessment', 'in-progress'] },
-      }),
-      Booking.countDocuments({ provider: providerId, status: 'completed' }),
-      Booking.aggregate([
-        {
-          $match: {
-            provider: new mongoose.Types.ObjectId(providerId),
-            status: 'completed',
-            completedAt: { $gte: startOfDay, $lte: endOfDay },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$totalAmount' },
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-    ]);
-
-    res.json({
-      success: true,
-      pendingRequests: pending,
-      activeJobs: active,
-      completedJobs: completed,
-      todayEarnings: todayEarnings[0]?.total || 0,
-      todayJobs: todayEarnings[0]?.count || 0,
-    });
-  } catch (error) {
-    console.log('[getProviderJobStats] Error:', error.message);
-    console.log('[getProviderJobStats] Stack:', error.stack);
-    res.status(500).json({ message: error.message });
-  }
-});
 
 
 module.exports = {
@@ -527,5 +479,5 @@ module.exports = {
   verifyStartCode,
   completeJob,
   requestAdditionalPayment,
-  getProviderJobStats
+  
 };

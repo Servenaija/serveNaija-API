@@ -13,11 +13,13 @@ const agentRoute       = require('./agent.route');
 const httpStatus       = require('http-status');
 const cache            = require('../../utils/cache');
 const providerOnboardingRoute = require ('./providerOnboarding.routes');
+const kycRoute = require( './kyc.routes');
 const router = express.Router();
 
 const defaultRoutes = [
   { path: '/auth',          route: authRoute },
   { path: '/admins',        route: adminRoute },
+  { path: '/kyc',           route: kycRoute},
   { path: '/user',          route: userRoute },
   { path: '/onboardingprovider',  route: providerOnboardingRoute},
   { path: '/provider',      route: providerRoute },

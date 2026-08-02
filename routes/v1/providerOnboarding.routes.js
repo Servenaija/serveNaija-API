@@ -34,9 +34,9 @@ router.route('/location')
 // Step 5: Profile Information with Image Upload
 router.route('/profile')
   .put(
-    verifyToken, 
+    verifyToken,
     uploadSingle, // Use uploadSingle for single image upload
-    validate(providerOnboardingValidation.updateProfile), 
+    validate(providerOnboardingValidation.updateProfile),
     providerOnboardingController.updateProfile
   )
   .all(unAllowedMethod);
@@ -48,6 +48,10 @@ router.route('/kyc-status')
 
 router.route('/submit-kyc')
   .post(verifyToken, validate(providerOnboardingValidation.submitKYC), providerOnboardingController.submitKYC)
+  .all(unAllowedMethod);
+
+router.route('/subscription')
+  .post(verifyToken, providerOnboardingController.verifySubscription)
   .all(unAllowedMethod);
 
 module.exports = router;

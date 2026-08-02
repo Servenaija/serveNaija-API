@@ -189,8 +189,8 @@ const providerSchema = new mongoose.Schema(
 		subscription: {
 			selectedPlan: {
 				type: String,
-				enum: ['standard','not-started', 'verified', 'starter', 'growth', 'premium', 'enterprise'],
-				// default: '',
+				enum: ['standard', 'verified', 'starter', 'growth', 'premium', 'enterprise'],
+				default: '',
 			},
 			amountPaid: {
 				type: Number,
@@ -266,5 +266,6 @@ providerSchema.index({ isBanned: 1, accountType: 1, createdAt: -1 });
 providerSchema.index({ kycVerified: 1, createdAt: -1 });
 providerSchema.index({ 'subscription.isActive': 1, accountType: 1 });
 providerSchema.index({ geoLocation: '2dsphere' });
+providerSchema.index({ email: 1, kycVerified: 1 });
 
 module.exports = mongoose.model('Provider', providerSchema);
