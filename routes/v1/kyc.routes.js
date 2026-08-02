@@ -9,7 +9,7 @@ router.use(allowedMethod);
 
 // Dojah webhook — no auth required (Dojah calls this)
 router.route('/webhook/dojah')
-    .post(verifyToken, kycController.dojahWebhook)
+    .post( kycController.dojahWebhook)
     .all(unAllowedMethod);
 
 
