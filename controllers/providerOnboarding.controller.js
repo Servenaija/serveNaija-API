@@ -5,6 +5,7 @@ const httpStatus = require('http-status');
 const  Provider  = require('../models/provider');
 const Category = require('../models/category');
 const { uploadObject } = require('../utils/aws.s3.bucket');
+const axios = require('axios');
 
 // Step 1: Choose Account Type
 const chooseAccountType = catchAsync(async (req, res) => {
@@ -249,6 +250,97 @@ const getKYCStatus = catchAsync(async (req, res) => {
     }
   });
 });
+const verifySubscription = catchAsync (async (req, res) => {
+  try {
+    const { reference } = req.body;
+    const providerId = req.user.id;
+
+    if (!reference) {
+      return res.status(400).json({
+        success: false,
+        message: 'Transaction reference is required',
+      });
+    }
+
+    // Verify transaction with Paystack
+    const response = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        },
+      }
+    );
+
+    if (!response.data.status) {
+      return res.status(400).json({
+        success: false,
+        message: response.data.message || 'Payment verification failed',
+      });
+    }
+
+    const transaction = response.data.data;
+
+    // Check if transaction was successful
+    if (transaction.status !== 'success') {
+      return res.status(400).json({
+        success: false,
+        message: `Payment status: ${transaction.status}`,
+      });
+    }
+
+    // Get plan from metadata
+    const plan = transaction.metadata?.plan;
+    if (!plan) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid plan in transaction metadata',
+      });
+    }
+
+    // Update provider's subscription
+    const provider = await Provider.findById(providerId);
+    if (!provider) {
+      return res.status(404).json({
+        success: false,
+        message: 'Provider not found',
+      });
+    }
+
+    const renewalDate = new Date();
+    renewalDate.setDate(renewalDate.getDate() + 365); // 1 year subscription
+
+    // Update subscription
+    provider.subscription = {
+      selectedPlan: plan,
+      amountPaid: transaction.amount / 100,
+      currency: transaction.currency || 'NGN',
+      paidAt: new Date(),
+      renewalDate: renewalDate,
+      isActive: true,
+    };
+
+    await provider.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Subscription activated successfully',
+      data: {
+        subscription: {
+          selectedPlan: provider.subscription.selectedPlan,
+          isActive: provider.subscription.isActive,
+          renewalDate: provider.subscription.renewalDate,
+        },
+      },
+    });
+  } catch (error) {
+    console.error('Subscription verification error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.response?.data?.message || 'Internal server error',
+    });
+  }
+});
 
 module.exports = {
   chooseAccountType,
@@ -258,4 +350,5 @@ module.exports = {
   updateProfile,
   submitKYC,
   getKYCStatus,
+  verifySubscription
 };

@@ -20,7 +20,7 @@ const logger = require('../config/logger');
 const { getIo } = require('../utils/io');
 const { isOnline } = require('../config/socket');
 
-const expo = new Expo({ accessToken: process.env.EXPO_ACCESS_TOKEN });
+const expo = new Expo();
 
 // Notification types that always warrant a push even when the user is online
 // (app may be backgrounded on the device even though the socket is connected

@@ -15,6 +15,7 @@ function sanitize(doc) {
 // GET /provider/me
 const getMe = catchAsync(async (req, res) => {
   res.json({ provider: sanitize(req.user) });
+  console.log(req.user)
 });
 
 // PUT /provider/me
@@ -101,7 +102,7 @@ const updateBankDetails = catchAsync(async (req, res) => {
       'bankDetails.bankName': bankName,
       'bankDetails.accountName': accountName,
       'bankDetails.accountNumber': accountNumber,
-      'bankDetails.isVerified': false,
+      'bankDetails.isVerified': true,
     },
   });
   res.json({ message: 'Bank details saved.' });
