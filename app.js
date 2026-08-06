@@ -132,7 +132,6 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // use json for response
-app.use(jsonHeader);
 
 // different path for files
 app.use('/filler', express.static(path.join(__dirname, 'public/uploads')));
@@ -150,6 +149,7 @@ app.post('/webhook/paystack', (req, res) => {
   }
   res.sendStatus(200);
 });
+app.use(jsonHeader);
 
 if (config.env !== 'production') {
   app.use(morgan.successHandler);

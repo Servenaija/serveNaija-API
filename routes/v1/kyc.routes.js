@@ -1,16 +1,16 @@
+// routes/kyc.routes.js
 const express = require('express');
-const  kycController  = require('../../controllers/kyc.controller');
-const { verifyToken } = require('../../middlewares/verify');
+const kycController = require('../../controllers/kyc.controller');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 
 const router = express.Router();
-router.use(allowedMethod);
 
-// Dojah webhook — no auth required (Dojah calls this)
+// Webhook - bypass jsonHeader check
 router.route('/webhook/dojah')
-    .post( kycController.dojahWebhook)
+    .post( kycController.dojahWebhook)  // No allowedMethod
     .all(unAllowedMethod);
 
 
-module.exports = router;  
+
+module.exports = router;
