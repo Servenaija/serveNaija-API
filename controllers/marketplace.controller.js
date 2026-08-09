@@ -4,7 +4,7 @@ const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
 const notificationService = require('../services/notification.service');
 const { getIo } = require('../utils/io');
-
+const { uploadObject } = require('../utils/aws.s3.bucket');
 // ─────────────────────────────────────────
 // STORES
 // ─────────────────────────────────────────
@@ -37,21 +37,49 @@ const getStoreStats = catchAsync(async (req, res) => {
   const store = await dB.stores.findOne({ _id: req.params.storeId, provider: req.user._id });
   if (!store) throw new ApiError(httpStatus.NOT_FOUND, 'Store not found.');
 
-  const [totalOrders, completedOrders, revenue] = await Promise.all([
+  // Get all stats in parallel with safe defaults
+  const [
+    totalOrders,
+    completedOrders,
+    pendingOrders,
+    revenueResult,
+    totalProducts,
+    totalCustomers
+  ] = await Promise.all([
     dB.orders.countDocuments({ store: store._id }),
     dB.orders.countDocuments({ store: store._id, status: 'delivered' }),
+    dB.orders.countDocuments({ store: store._id, status: 'pending' }),
     dB.orders.aggregate([
       { $match: { store: store._id, status: 'delivered' } },
-      { $group: { _id: null, total: { $sum: '$subtotal' } } },
+      { $group: { _id: null, total: { $sum: '$total' } } },
     ]),
+    dB.products.countDocuments({ store: store._id, isActive: true }),
+    dB.orders.distinct('buyer', { store: store._id }),
   ]);
+
+  // Get average rating from reviews (if reviews exist)
+  let averageRating = 0;
+  try {
+    const avgRatingResult = await dB.reviews.aggregate([
+      { $match: { target: store._id, targetType: 'store' } },
+      { $group: { _id: null, avg: { $avg: '$overall' } } },
+    ]);
+    averageRating = avgRatingResult[0]?.avg || 0;
+  } catch (error) {
+    // Reviews collection might not exist yet
+    averageRating = 0;
+  }
 
   res.json({
     stats: {
-      totalOrders,
-      completedOrders,
-      revenue: revenue[0]?.total || 0,
-      productCount: await dB.products.countDocuments({ store: store._id, isActive: true }),
+      totalProducts: totalProducts || 0,
+      totalOrders: totalOrders || 0,
+      totalRevenue: revenueResult[0]?.total || 0,
+      totalSales: totalOrders || 0,
+      totalCustomers: totalCustomers.length || 0,
+      averageRating: averageRating || 0,
+      completedOrders: completedOrders || 0,
+      pendingOrders: pendingOrders || 0,
     },
   });
 });
@@ -85,7 +113,49 @@ const createProduct = catchAsync(async (req, res) => {
   const store = await dB.stores.findOne({ provider: req.user._id });
   if (!store) throw new ApiError(httpStatus.BAD_REQUEST, 'You need a store before adding products.');
 
-  const product = await dB.products.create({ store: store._id, provider: req.user._id, ...req.body });
+  // Handle image uploads if files exist
+  let imageUrls = [];
+  if (req.files && req.files.length > 0) {
+    try {
+      // Upload each image to Cloudflare R2
+      const uploadPromises = req.files.map(async (file, index) => {
+        const key = `products/${store._id}/${Date.now()}-${index}-${file.originalname}`;
+        
+        console.log('Uploading product image to R2...');
+        console.log('Bucket:', process.env.R2_BUCKET_NAME);
+        console.log('Key:', key);
+
+        const uploadResult = await uploadObject({
+          Bucket: process.env.R2_BUCKET_NAME,
+          Key: key,
+          Body: file.buffer,
+          ContentType: file.mimetype,
+        });
+
+        console.log('Upload result:', uploadResult);
+        return uploadResult.Location;
+      });
+
+      imageUrls = await Promise.all(uploadPromises);
+      console.log('All images uploaded:', imageUrls);
+    } catch (uploadError) {
+      console.error('R2 upload failed:', uploadError);
+      throw new ApiError(
+        httpStatus.INTERNAL_SERVER_ERROR,
+        'Image upload failed. Please try again.'
+      );
+    }
+  }
+
+  // Create product with image URLs
+  const productData = {
+    store: store._id,
+    provider: req.user._id,
+    ...req.body,
+    images: imageUrls.length > 0 ? imageUrls : req.body.images || [],
+  };
+
+  const product = await dB.products.create(productData);
   res.status(httpStatus.CREATED).json({ product });
 });
 
@@ -112,14 +182,24 @@ const deleteProduct = catchAsync(async (req, res) => {
 });
 
 const getStoreProducts = catchAsync(async (req, res) => {
-  const { category, page = 0, limit = 20 } = req.query;
-  const query = { store: req.params.storeId, isActive: true };
+  const { category, page = 0, limit = 20, showInactive } = req.query;
+  const query = { store: req.params.storeId };
+  
+  // Only filter by isActive if showInactive is not true
+  if (showInactive !== 'true') {
+    query.isActive = true;
+  }
+  
   if (category) query.category = category;
 
   const safePage = Math.max(0, Number(page));
   const safeLimit = Math.min(50, Math.max(1, Number(limit)));
 
-  const products = await dB.products.find(query).sort({ createdAt: -1 }).skip(safePage * safeLimit).limit(safeLimit);
+  const products = await dB.products.find(query)
+    .sort({ createdAt: -1 })
+    .skip(safePage * safeLimit)
+    .limit(safeLimit);
+    
   res.json({ products });
 });
 
@@ -210,22 +290,28 @@ const createOrder = catchAsync(async (req, res) => {
     const product = productMap[item.productId];
     if (!product) throw new ApiError(httpStatus.BAD_REQUEST, `Product ${item.productId} not found.`);
     if (product.stock < item.quantity) throw new ApiError(httpStatus.BAD_REQUEST, `${product.name} is out of stock.`);
-    resolvedItems.push({ product: product._id, name: product.name, price: product.price, quantity: item.quantity, image: product.images?.[0] || null });
+    resolvedItems.push({
+      product: product._id,
+      name: product.name,
+      price: product.price,
+      quantity: item.quantity,
+      image: product.images?.[0] || null
+    });
     subtotal += product.price * item.quantity;
   }
 
-  const DELIVERY_FEE = Math.round(subtotal * 0.10); // 10% of subtotal
+  const DELIVERY_FEE = 800; // Fixed delivery fee or calculate as needed
   const total = subtotal + DELIVERY_FEE;
 
   const order = await dB.orders.create({
     buyer: req.user._id,
     store: storeId,
     items: resolvedItems,
-    subtotal,
+    subtotal: subtotal,
     deliveryFee: DELIVERY_FEE,
-    total,
-    deliveryAddress,
-    paymentMethod,
+    total: total,
+    deliveryAddress: deliveryAddress,
+    paymentMethod: paymentMethod || 'cod',
     paystackReference: paystackReference || null,
     paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
     status: 'confirmed',
@@ -234,7 +320,9 @@ const createOrder = catchAsync(async (req, res) => {
 
   // Decrement stock
   for (const item of resolvedItems) {
-    await dB.products.findByIdAndUpdate(item.product, { $inc: { stock: -item.quantity, soldCount: item.quantity } });
+    await dB.products.findByIdAndUpdate(item.product, {
+      $inc: { stock: -item.quantity, soldCount: item.quantity }
+    });
   }
 
   res.status(httpStatus.CREATED).json({ order });

@@ -38,7 +38,7 @@ const registerUser = {
         'any.only': 'Confirm password must match password.',
       }),
     birthday: Joi.string().isoDate().optional(),
-    referralCode: Joi.string().allow('', null).optional(),
+    agentCode: Joi.string().allow('', null).optional(),
     agentCode: Joi.string().allow('', null).optional(),
     expoPushToken: Joi.string().optional(),
 
@@ -63,7 +63,7 @@ const registerProvider = {
       'any.required': 'Password is required.',
       'string.empty': 'Password is required.',
     }),
-    referralCode: Joi.string().allow('', null).optional(),
+    agentCode: Joi.string().allow('', null).optional(),
    
     
    

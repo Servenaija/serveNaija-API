@@ -10,33 +10,7 @@ const bookingValidation = require('../../validations/booking.validation');
 const router = express.Router();
 router.use(allowedMethod);
 
-// ─── CUSTOMER: Bookings ───────────────────
-router.route('/')
-  .get(verifyToken, bookingController.listBookings)
-  .post(verifyToken, validate(bookingValidation.createBooking), bookingController.createBooking)
-  .all(unAllowedMethod);
-
-router.route('/:id')
-  .get(verifyToken, bookingController.getBooking)
-  .all(unAllowedMethod);
-
-router.route('/:id/cancel')
-  .put(verifyToken, validate(bookingValidation.cancelBooking), bookingController.cancelBooking)
-  .all(unAllowedMethod);
-
-router.route('/:id/start-code/generate')
-  .post(verifyToken, bookingController.generateStartCode)
-  .all(unAllowedMethod);
-
-router.route('/:id/confirm-complete')
-  .post(verifyToken, bookingController.confirmComplete)
-  .all(unAllowedMethod);
-
-router.route('/:id/rate')
-  .post(verifyToken, validate(bookingValidation.rateBooking), bookingController.rateBooking)
-  .all(unAllowedMethod);
-
-// ─── PROVIDER: Jobs ───────────────────────
+// ─── PROVIDER: Jobs ─────────────────────── (MOVED UP - STATIC ROUTES FIRST)
 router.route('/jobs')
   .get(verifyToken, bookingController.listJobs)
   .all(unAllowedMethod);
@@ -69,5 +43,30 @@ router.route('/jobs/:id/additional-payment')
   .post(verifyToken, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
   .all(unAllowedMethod);
 
+// ─── CUSTOMER: Bookings ─────────────────── (MOVED DOWN - DYNAMIC ROUTES LAST)
+router.route('/')
+  .get(verifyToken, bookingController.listBookings)
+  .post(verifyToken, validate(bookingValidation.createBooking), bookingController.createBooking)
+  .all(unAllowedMethod);
+
+router.route('/:id')
+  .get(verifyToken, bookingController.getBooking)
+  .all(unAllowedMethod);
+
+router.route('/:id/cancel')
+  .put(verifyToken, validate(bookingValidation.cancelBooking), bookingController.cancelBooking)
+  .all(unAllowedMethod);
+
+router.route('/:id/start-code/generate')
+  .post(verifyToken, bookingController.generateStartCode)
+  .all(unAllowedMethod);
+
+router.route('/:id/confirm-complete')
+  .post(verifyToken, bookingController.confirmComplete)
+  .all(unAllowedMethod);
+
+router.route('/:id/rate')
+  .post(verifyToken, validate(bookingValidation.rateBooking), bookingController.rateBooking)
+  .all(unAllowedMethod);
 
 module.exports = router;

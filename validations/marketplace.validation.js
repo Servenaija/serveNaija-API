@@ -8,6 +8,8 @@ const createStore = {
     name: Joi.string().trim().required().messages({ 'any.required': 'Store name is required.' }),
     description: Joi.string().trim().optional().allow(''),
     category: Joi.string().valid(...STORE_CATEGORIES).optional(),
+        isActive: Joi.boolean().optional(),
+
   }),
 };
 
@@ -28,7 +30,7 @@ const createProduct = {
     originalPrice: Joi.number().min(0).optional().allow(null),
     stock: Joi.number().integer().min(0).required().messages({ 'any.required': 'Stock quantity is required.' }),
     category: Joi.string().valid(...PRODUCT_CATEGORIES).optional(),
-    images: Joi.array().items(Joi.string()).max(5).optional(),
+    // Remove images from body validation since we'll handle files separately
     isActive: Joi.boolean().optional(),
   }),
 };

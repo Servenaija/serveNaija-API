@@ -32,7 +32,8 @@ const updateLocation = {
 const updateProfile = {
   body: Joi.object().keys({
     photo: Joi.string().uri().allow(null),
-    bio: Joi.string().trim().max(500).allow('', null)
+    bio: Joi.string().trim().max(500).allow('', null),
+    coverImage: Joi.string().uri().allow(null)
   })
 };
 

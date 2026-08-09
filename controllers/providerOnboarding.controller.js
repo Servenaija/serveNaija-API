@@ -6,6 +6,8 @@ const  Provider  = require('../models/provider');
 const Category = require('../models/category');
 const { uploadObject } = require('../utils/aws.s3.bucket');
 const axios = require('axios');
+const Agent = require('../models/agent');
+
 
 // Step 1: Choose Account Type
 const chooseAccountType = catchAsync(async (req, res) => {
@@ -149,14 +151,15 @@ const updateLocation = catchAsync(async (req, res) => {
 const updateProfile = catchAsync(async (req, res) => {
   const { bio } = req.body;
   let photoUrl = null;
+  let coverImageUrl = null;
 
-  // Handle photo upload if file exists
+  // Handle profile photo upload if file exists
   if (req.file) {
     try {
       const file = req.file;
       const key = `providers/${req.user._id}/profile/${Date.now()}-${file.originalname}`;
 
-      console.log('Uploading to R2...');
+      console.log('Uploading profile photo to R2...');
       console.log('Bucket:', process.env.R2_BUCKET_NAME);
       console.log('Key:', key);
 
@@ -169,7 +172,6 @@ const updateProfile = catchAsync(async (req, res) => {
 
       console.log('Upload result:', uploadResult);
 
-      // uploadObject already returns Location using publicUrl
       photoUrl = uploadResult.Location;
 
       if (!photoUrl) {
@@ -184,9 +186,47 @@ const updateProfile = catchAsync(async (req, res) => {
     }
   }
 
+  // Handle cover image upload if file exists
+  if (req.files && req.files.coverImage && req.files.coverImage.length > 0) {
+    try {
+      const file = req.files.coverImage[0];
+      const key = `providers/${req.user._id}/cover/${Date.now()}-${file.originalname}`;
+
+      console.log('Uploading cover image to R2...');
+      console.log('Bucket:', process.env.R2_BUCKET_NAME);
+      console.log('Key:', key);
+
+      const uploadResult = await uploadObject({
+        Bucket: process.env.R2_BUCKET_NAME,
+        Key: key,
+        Body: file.buffer,
+        ContentType: file.mimetype,
+      });
+
+      console.log('Upload result:', uploadResult);
+
+      coverImageUrl = uploadResult.Location;
+
+      if (!coverImageUrl) {
+        throw new Error('Upload succeeded but no URL returned');
+      }
+    } catch (uploadError) {
+      console.error('R2 cover image upload failed:', uploadError);
+      throw new ApiError(
+        httpStatus.INTERNAL_SERVER_ERROR,
+        'Cover image upload failed. Please try again.'
+      );
+    }
+  }
+
   // If photo URL is provided in body (base64/URL from frontend)
   if (req.body.photo && !req.file) {
     photoUrl = req.body.photo;
+  }
+
+  // If cover image URL is provided in body
+  if (req.body.coverImage && !(req.files && req.files.coverImage)) {
+    coverImageUrl = req.body.coverImage;
   }
 
   const updateData = {
@@ -195,6 +235,10 @@ const updateProfile = catchAsync(async (req, res) => {
 
   if (photoUrl) {
     updateData['profile.photo'] = photoUrl;
+  }
+
+  if (coverImageUrl) {
+    updateData['profile.coverImage'] = coverImageUrl;
   }
 
   const provider = await Provider.findByIdAndUpdate(
@@ -250,7 +294,7 @@ const getKYCStatus = catchAsync(async (req, res) => {
     }
   });
 });
-const verifySubscription = catchAsync (async (req, res) => {
+const verifySubscription = catchAsync(async (req, res) => {
   try {
     const { reference } = req.body;
     const providerId = req.user.id;
@@ -281,7 +325,6 @@ const verifySubscription = catchAsync (async (req, res) => {
 
     const transaction = response.data.data;
 
-    // Check if transaction was successful
     if (transaction.status !== 'success') {
       return res.status(400).json({
         success: false,
@@ -289,7 +332,6 @@ const verifySubscription = catchAsync (async (req, res) => {
       });
     }
 
-    // Get plan from metadata
     const plan = transaction.metadata?.plan;
     if (!plan) {
       return res.status(400).json({
@@ -298,7 +340,7 @@ const verifySubscription = catchAsync (async (req, res) => {
       });
     }
 
-    // Update provider's subscription
+    // Get provider
     const provider = await Provider.findById(providerId);
     if (!provider) {
       return res.status(404).json({
@@ -307,13 +349,43 @@ const verifySubscription = catchAsync (async (req, res) => {
       });
     }
 
-    const renewalDate = new Date();
-    renewalDate.setDate(renewalDate.getDate() + 365); // 1 year subscription
+    // Check if provider has an agent code
+    let agent = null;
+    let commissionAmount = 0;
+    const agentCode = provider.agentCode || transaction.metadata?.agentCode || req.body.agentCode;
 
-    // Update subscription
+    if (agentCode) {
+      agent = await Agent.findOne({ agentCode: agentCode.toUpperCase(), isActive: true });
+      
+      if (agent) {
+        // transaction.amount is already in Naira
+        // Calculate 6% commission on the amount (in Naira)
+        const amountPaid = transaction.amount;
+        commissionAmount = Math.round(amountPaid * 0.06); // 6% of amount in Naira
+        
+        // Add referral to agent
+        try {
+          const existingReferral = agent.referrals.find(
+            r => r.referredUserId === providerId && r.referredUserType === 'provider'
+          );
+          
+          if (!existingReferral) {
+            await agent.addReferral(providerId, 'provider', commissionAmount);
+            console.log(`Commission of ₦${commissionAmount} added to agent ${agent.agentCode}`);
+          }
+        } catch (referralError) {
+          console.error('Error adding referral to agent:', referralError);
+        }
+      }
+    }
+
+    const renewalDate = new Date();
+    renewalDate.setDate(renewalDate.getDate() + 365);
+
+    // Update subscription - amount is in Naira
     provider.subscription = {
       selectedPlan: plan,
-      amountPaid: transaction.amount / 100,
+      amountPaid: transaction.amount, // Naira
       currency: transaction.currency || 'NGN',
       paidAt: new Date(),
       renewalDate: renewalDate,
@@ -322,16 +394,30 @@ const verifySubscription = catchAsync (async (req, res) => {
 
     await provider.save();
 
+    const responseData = {
+      subscription: {
+        selectedPlan: provider.subscription.selectedPlan,
+        isActive: provider.subscription.isActive,
+        renewalDate: provider.subscription.renewalDate,
+        amountPaid: provider.subscription.amountPaid,
+      },
+      agentCode: provider.agentCode,
+    };
+
+    if (agent) {
+      const stats = agent.getStats();
+      responseData.agent = {
+        agentCode: agent.agentCode,
+        commission: commissionAmount,
+        wallet: stats.wallet,
+        totalReferrals: stats.totalReferrals,
+      };
+    }
+
     return res.status(200).json({
       success: true,
-      message: 'Subscription activated successfully',
-      data: {
-        subscription: {
-          selectedPlan: provider.subscription.selectedPlan,
-          isActive: provider.subscription.isActive,
-          renewalDate: provider.subscription.renewalDate,
-        },
-      },
+      message: agent ? 'Subscription activated successfully. Agent commission added!' : 'Subscription activated successfully.',
+      data: responseData,
     });
   } catch (error) {
     console.error('Subscription verification error:', error);

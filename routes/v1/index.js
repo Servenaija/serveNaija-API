@@ -14,10 +14,14 @@ const httpStatus       = require('http-status');
 const cache            = require('../../utils/cache');
 const providerOnboardingRoute = require ('./providerOnboarding.routes');
 const kycRoute = require( './kyc.routes');
+const promoteRoute = require('./promote.route');
+const supportRoutes = require('./support.routes');
+
 const router = express.Router();
 
 const defaultRoutes = [
   { path: '/auth',          route: authRoute },
+  { path: '/promote',       route: promoteRoute },
   { path: '/admins',        route: adminRoute },
   { path: '/kyc',           route: kycRoute},
   { path: '/user',          route: userRoute },
@@ -27,6 +31,7 @@ const defaultRoutes = [
   { path: '/notifications', route: notificationRoute },
   { path: '/chat',          route: chatRoute },
   { path: '/calls',         route: callRoute },
+  { path: '/support',       route: supportRoutes },
   { path: '/wallet',        route: walletRoute },
   { path: '/marketplace',   route: marketplaceRoute },
   { path: '/agent',         route: agentRoute },

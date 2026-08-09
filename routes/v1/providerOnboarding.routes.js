@@ -4,7 +4,7 @@ const { verifyToken } = require('../../middlewares/verify');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 const validate = require('../../middlewares/validate');
-const { uploadSingle } = require('../../middlewares/upload');
+const { uploadFields } = require('../../middlewares/upload');
 const providerOnboardingController = require('../../controllers/providerOnboarding.controller');
 const providerOnboardingValidation = require('../../validations/providerOnboarding.validation');
 
@@ -35,7 +35,7 @@ router.route('/location')
 router.route('/profile')
   .put(
     verifyToken,
-    uploadSingle, // Use uploadSingle for single image upload
+    uploadFields, // Use uploadFields (already configured with fields)
     validate(providerOnboardingValidation.updateProfile),
     providerOnboardingController.updateProfile
   )

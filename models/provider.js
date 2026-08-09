@@ -42,7 +42,7 @@ const providerSchema = new mongoose.Schema(
 			enum: ['provider', 'business'],
 			index: true,
 		},
-		referralCode: {
+		agentCode: {
 			type: String,
 			trim: true,
 			default: null,
@@ -120,6 +120,11 @@ const providerSchema = new mongoose.Schema(
 				type: String,
 				trim: true,
 				default: '',
+			},
+			coverImage: {
+				type: String,
+				trim: true,
+				default: null,
 			},
 		},
 		business: {

@@ -5,7 +5,7 @@ const { unAllowedMethod } = require('../../middlewares/method');
 const validate = require('../../middlewares/validate');
 const mp = require('../../controllers/marketplace.controller');
 const mpValidation = require('../../validations/marketplace.validation');
-
+const { uploadMultiple } = require('../../middlewares/upload');
 const router = express.Router();
 router.use(allowedMethod);
 
@@ -41,12 +41,12 @@ router.route('/stores/:storeId/reviews')
 
 // ─── PRODUCTS ─────────────────────────────
 router.route('/products/create')
-  .post(verifyToken, validate(mpValidation.createProduct), mp.createProduct)
+  .post(verifyToken, validate(mpValidation.createProduct), uploadMultiple, mp.createProduct)
   .all(unAllowedMethod);
 
 router.route('/products/:productId')
   .get(mp.getProduct)
-  .put(verifyToken, validate(mpValidation.updateProduct), mp.updateProduct)
+  .put(verifyToken, validate(mpValidation.updateProduct), uploadMultiple, mp.updateProduct)
   .delete(verifyToken, mp.deleteProduct)
   .all(unAllowedMethod);
 

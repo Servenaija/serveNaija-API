@@ -3,28 +3,30 @@ const { mongooseP } = require('../config/auth');
 const logger = require('../config/logger');
 
 // ── Core models
-const token    = require('./token');
+const token = require('./token');
 const customer = require('./customer');
 const provider = require('./provider');
-const admin    = require('./admin');
+const admin = require('./admin');
 
 // ── Feature models
-const booking      = require('./booking');
+const booking = require('./booking');
 const conversation = require('./conversation');
-const message      = require('./message');
+const message = require('./message');
 const notification = require('./notification');
-const wallet       = require('./wallet');
-const transaction  = require('./transaction');
-const service      = require('./service');
-const store        = require('./store');
-const product      = require('./product');
-const order        = require('./order');
-const review       = require('./review');
-const agent        = require('./agent');
-const call         = require('./call');
-const kyc          = require('./kyc');
-const category     = require('./category');
-const promotion    = require('./promotion');
+const wallet = require('./wallet');
+const transaction = require('./transaction');
+const service = require('./service');
+const store = require('./store');
+const product = require('./product');
+const order = require('./order');
+const review = require('./review');
+const agent = require('./agent');
+const call = require('./call');
+const kyc = require('./kyc');
+const category = require('./category');
+const promotion = require('./promotion');
+const SupportTicket = require('./SupportTicket');
+
 
 mongoose.set('strictQuery', false);
 
@@ -53,27 +55,32 @@ mongooseInstance
 dB.mongo = mongooseInstance;
 
 // Core
-dB.tokens    = token;
+dB.tokens = token;
 dB.customers = customer;
 dB.providers = provider;
-dB.admins    = admin;
+dB.admins = admin;
 
 // Features
-dB.bookings      = booking;
+dB.bookings = booking;
 dB.conversations = conversation;
-dB.messages      = message;
+dB.messages = message;
 dB.notifications = notification;
-dB.wallets       = wallet;
-dB.transactions  = transaction;
-dB.services      = service;
-dB.stores        = store;
-dB.products      = product;
-dB.orders        = order;
-dB.reviews       = review;
-dB.agents        = agent;
-dB.categories    = category;
-dB.promotions    = promotion;
-dB.calls         = call;
-dB.kyc           = kyc;
+dB.wallets = wallet;
+dB.transactions = transaction;
+dB.services = service;
+dB.stores = store;
+dB.products = product;
+dB.orders = order;
+dB.reviews = review;
+dB.agents = agent;
+dB.categories = category;
+dB.promotions = promotion;
+dB.calls = call;
+dB.kyc = kyc;
+dB.SupportTickets = SupportTicket;
 
-module.exports = { dB };
+module.exports = {
+  dB,
+  supportTickets: SupportTicket,
+
+};

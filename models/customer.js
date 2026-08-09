@@ -45,7 +45,7 @@ const customerSchema = new mongoose.Schema(
 			trim: true,
 			default: null,
 		},
-		referralCode: {
+		agentCode: {
 			type: String,
 			trim: true,
 			default: null,
