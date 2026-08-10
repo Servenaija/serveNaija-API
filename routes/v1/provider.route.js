@@ -76,6 +76,14 @@ router.route('/promotion')
 router.route('/subscription/plans')
   .get(verifyToken, providerController.getSubscriptionPlans)
   .all(unAllowedMethod);
+router.route('/deactivate')
+  .post(verifyToken, providerController.deactivateAccount)
+  .all(unAllowedMethod);
+
+// Reactivate account (no token required)
+router.route('/reactivate')
+  .post(validate(providerValidation.login), providerController.reactivateAccount)
+  .all(unAllowedMethod);
 
 router.route('/subscription/activate')
   .post(verifyToken, providerController.manageSubscription)

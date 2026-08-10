@@ -16,12 +16,16 @@ const providerOnboardingRoute = require ('./providerOnboarding.routes');
 const kycRoute = require( './kyc.routes');
 const promoteRoute = require('./promote.route');
 const supportRoutes = require('./support.routes');
+const subscriptionRoute = require('./subcription.route');
+const businessOnboardingRoute = require('./businessOnboarding.routes');
 
 const router = express.Router();
 
 const defaultRoutes = [
   { path: '/auth',          route: authRoute },
   { path: '/promote',       route: promoteRoute },
+  { path: '/business-onboarding', route: businessOnboardingRoute },
+  { path: '/subscriptions', route: subscriptionRoute },
   { path: '/admins',        route: adminRoute },
   { path: '/kyc',           route: kycRoute},
   { path: '/user',          route: userRoute },

@@ -4,12 +4,21 @@ const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
 const notificationService = require('../services/notification.service');
+const { tokenService} = require('../services');
+const { PLAN_PRICES } = require('../models/promotion');
+
 
 function sanitize(doc) {
   const obj = doc.toObject ? doc.toObject() : { ...doc };
   delete obj.password;
   delete obj.__v;
   return obj;
+}
+function sanitizeUser(userDoc) {
+  const safe = userDoc.toObject();
+  delete safe.password;
+  delete safe.__v;
+  return safe;
 }
 
 // GET /provider/me
@@ -228,11 +237,11 @@ const getEarnings = catchAsync(async (req, res) => {
 
 // Subscription plan pricing (yearly, in NGN)
 const SUBSCRIPTION_PLANS = {
-  standard:   { amount: 5000,   durationDays: 365 },
-  verified:   { amount: 20000,  durationDays: 365 },
-  starter:    { amount: 20000,  durationDays: 365 },
-  growth:     { amount: 50000,  durationDays: 365 },
-  premium:    { amount: 100000, durationDays: 365 },
+  standard: { amount: 5000, durationDays: 365 },
+  verified: { amount: 20000, durationDays: 365 },
+  starter: { amount: 20000, durationDays: 365 },
+  growth: { amount: 50000, durationDays: 365 },
+  premium: { amount: 100000, durationDays: 365 },
   enterprise: { amount: 250000, durationDays: 365 },
 };
 
@@ -359,7 +368,7 @@ const manageSubscription = catchAsync(async (req, res) => {
     body: `Welcome to the ${plan} plan! Your plan is active until ${endDate.toLocaleDateString('en-NG')}.`,
     type: 'system',
     data: { screen: 'profile' },
-  }).catch(() => {});
+  }).catch(() => { });
 
   res.status(httpStatus.CREATED).json({
     message: `Subscription ${isUpgrade ? 'upgraded' : 'activated'} successfully.`,
@@ -374,7 +383,6 @@ const manageSubscription = catchAsync(async (req, res) => {
 // PROMOTIONS
 // ─────────────────────────────────────────
 
-const { PLAN_PRICES } = require('../models/promotion');
 
 // GET /provider/promotion  — current active promotions
 const getMyPromotions = catchAsync(async (req, res) => {
@@ -455,6 +463,104 @@ const purchasePromotion = catchAsync(async (req, res) => {
   res.status(httpStatus.CREATED).json({ promotion, message: 'Promotion activated.' });
 });
 
+// controllers/provider.controller.js
+
+// Deactivate account (soft delete)
+const deactivateAccount = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+
+  const provider = await dB.providers.findById(userId);
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  }
+
+  // Set deactivation date
+  provider.deactivatedAt = new Date();
+  provider.isDeactivated = true;
+  provider.isActive = false; // Also deactivate their subscription/status
+
+  // Revoke all tokens or sessions if needed
+  // provider.tokens = [];
+
+  await provider.save();
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    message: 'Account deactivated successfully. You can reactivate by logging in within 6 months.',
+    data: {
+      deactivatedAt: provider.deactivatedAt,
+      reactivationDeadline: new Date(Date.now() + 6 * 30 * 24 * 60 * 60 * 1000), // 6 months from now
+    },
+  });
+});
+
+// Reactivate account (login will trigger this)
+const reactivateAccount = catchAsync(async (req, res) => {
+  const { email, password } = req.body;
+
+  const provider = await dB.providers.findOne({ email }).select('+password');
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'User not found');
+  }
+
+  // Check if account was deactivated
+  if (!provider.isDeactivated) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Account is already active');
+  }
+
+  // Check if 6 months have passed
+  const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+  if (provider.deactivatedAt < sixMonthsAgo) {
+    throw new ApiError(httpStatus.GONE, 'Account has been permanently deleted. Please create a new account.');
+  }
+
+  // Verify password
+  const isPasswordMatch = await bcrypt.compare(password, provider.password);
+  if (!isPasswordMatch) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Invalid credentials');
+  }
+
+  // Reactivate account
+  provider.isDeactivated = false;
+  provider.deactivatedAt = null;
+  provider.lastLogin = new Date();
+
+  await provider.save();
+
+  // Generate tokens using the same method as login
+  const id = provider._id.toString();
+  const tokens = await tokenService.generateAuthTokens({ id, actor: 'provider' });
+
+  // Sanitize user object (remove sensitive data)
+  const sanitizedUser = sanitizeUser(provider);
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    message: 'Account reactivated successfully. You can now log in.',
+    data: {
+      user: sanitizedUser,
+      tokens,
+    },
+  });
+});
+
+// Permanent deletion of accounts deactivated for 6+ months (cron job)
+const permanentDeleteDeactivatedAccounts = catchAsync(async (req, res) => {
+  const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+
+  const result = await dB.providers.deleteMany({
+    isDeactivated: true,
+    deactivatedAt: { $lt: sixMonthsAgo },
+  });
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    message: `Permanently deleted ${result.deletedCount} accounts`,
+    data: {
+      deletedCount: result.deletedCount,
+    },
+  });
+});
 module.exports = {
   getMe,
   updateMe,
@@ -474,4 +580,7 @@ module.exports = {
   manageSubscription,
   getMyPromotions,
   purchasePromotion,
+  deactivateAccount,
+  reactivateAccount,
+  permanentDeleteDeactivatedAccounts,
 };
