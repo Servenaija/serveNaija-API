@@ -2,9 +2,10 @@
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const httpStatus = require('http-status');
-const  Provider  = require('../models/provider');
+const Provider = require('../models/provider');
 const Category = require('../models/category');
 const { uploadObject } = require('../utils/aws.s3.bucket');
+const { sendPushNotification } = require('../services/notification.service');
 const axios = require('axios');
 const Agent = require('../models/agent');
 
@@ -153,10 +154,10 @@ const updateProfile = catchAsync(async (req, res) => {
   let photoUrl = null;
   let coverImageUrl = null;
 
-  // Handle profile photo upload if file exists
-  if (req.file) {
+  // Handle profile photo upload - check req.files.photo instead of req.file
+  if (req.files && req.files.photo && req.files.photo.length > 0) {
     try {
-      const file = req.file;
+      const file = req.files.photo[0];
       const key = `providers/${req.user._id}/profile/${Date.now()}-${file.originalname}`;
 
       console.log('Uploading profile photo to R2...');
@@ -220,12 +221,12 @@ const updateProfile = catchAsync(async (req, res) => {
   }
 
   // If photo URL is provided in body (base64/URL from frontend)
-  if (req.body.photo && !req.file) {
+  if (req.body.photo && !(req.files && req.files.photo && req.files.photo.length > 0)) {
     photoUrl = req.body.photo;
   }
 
   // If cover image URL is provided in body
-  if (req.body.coverImage && !(req.files && req.files.coverImage)) {
+  if (req.body.coverImage && !(req.files && req.files.coverImage && req.files.coverImage.length > 0)) {
     coverImageUrl = req.body.coverImage;
   }
 
@@ -240,6 +241,8 @@ const updateProfile = catchAsync(async (req, res) => {
   if (coverImageUrl) {
     updateData['profile.coverImage'] = coverImageUrl;
   }
+
+  console.log('Update data:', updateData);
 
   const provider = await Provider.findByIdAndUpdate(
     req.user._id,
@@ -256,41 +259,91 @@ const updateProfile = catchAsync(async (req, res) => {
 
 // Step 6: Submit KYC (boolean true/false)
 const submitKYC = catchAsync(async (req, res) => {
-  const { kycVerified } = req.body;
+  const { status } = req.body; // 'pending', 'approved', or 'failed'
 
-  // kycVerified should be a boolean
-  if (typeof kycVerified !== 'boolean') {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'kycVerified must be a boolean (true or false)');
+  if (!status) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'status is required (pending, approved, or failed)');
+  }
+
+  const validStatuses = ['pending', 'approved', 'failed'];
+  if (!validStatuses.includes(status)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid status. Use pending, approved, or failed');
+  }
+
+  let message = '';
+  let notificationTitle = '';
+  let notificationBody = '';
+
+  if (status === 'approved') {
+    message = 'KYC verified successfully';
+    notificationTitle = 'KYC Verification Approved';
+    notificationBody = 'Your KYC verification has been approved. You can now access all provider features.';
+  } else if (status === 'pending') {
+    message = 'KYC is pending review. You will be notified within 24 hours.';
+    notificationTitle = 'KYC Verification Pending';
+    notificationBody = 'Your KYC verification is pending review. You will be notified once it is completed within 24 hours.';
+  } else if (status === 'failed') {
+    message = 'KYC verification failed';
+    notificationTitle = 'KYC Verification Failed';
+    notificationBody = 'Your KYC verification could not be completed. Please contact support for assistance.';
   }
 
   const provider = await Provider.findByIdAndUpdate(
     req.user._id,
-    { kycVerified },
+    { kycStatus: status },
     { new: true, runValidators: true }
   );
 
+  // Send push notification
+  if (provider && provider.expoPushToken) {
+    try {
+      await sendPushNotification({
+        userId: provider._id.toString(),
+        actorType: 'provider',
+        title: notificationTitle,
+        body: notificationBody,
+        type: 'kyc',
+        data: {
+          status: status,
+          updatedAt: new Date().toISOString()
+        },
+      });
+      console.log(`[KYC] Notification sent: ${notificationTitle} to provider ${provider.email}`);
+    } catch (notificationError) {
+      console.error('[KYC] Failed to send notification:', notificationError);
+    }
+  }
+
   res.json({
     success: true,
-    message: `KYC ${kycVerified ? 'verified' : 'not verified'} successfully`,
-    data: { kycVerified: provider.kycVerified }
+    message,
+    data: {
+      kycStatus: provider.kycStatus,
+      status: status,
+      message: message
+    }
   });
 });
 
 // Get KYC Status
 const getKYCStatus = catchAsync(async (req, res) => {
   const provider = await Provider.findById(req.user._id)
-    .select('kycVerified firstName lastName email phoneNumber');
+    .select('kycStatus firstName lastName email phoneNumber');
 
   res.json({
     success: true,
     data: {
-      kycVerified: provider.kycVerified,
+      kycStatus: provider.kycStatus || 'idle',
+      status: provider.kycStatus || 'idle',
       userInfo: {
         firstName: provider.firstName,
         lastName: provider.lastName,
         email: provider.email,
-        phoneNumber: provider.phoneNumber
-      }
+        phoneNumber: provider.phoneNumber,
+      },
+      message: provider.kycStatus === 'pending'
+        ? 'KYC is pending review. You will be notified within 24 hours.'
+        : undefined
     }
   });
 });
@@ -303,6 +356,15 @@ const verifySubscription = catchAsync(async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Transaction reference is required',
+      });
+    }
+
+    // Check if reference already used
+    const existingTx = await dB.transactions.findOne({ reference });
+    if (existingTx) {
+      return res.status(400).json({
+        success: false,
+        message: 'This payment reference has already been processed',
       });
     }
 
@@ -349,6 +411,15 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
+    // Get or create wallet
+    let wallet = await dB.wallets.findOne({ owner: providerId.toString() });
+    if (!wallet) {
+      wallet = await dB.wallets.create({
+        owner: providerId.toString(),
+        ownerType: 'provider',
+      });
+    }
+
     // Check if provider has an agent code
     let agent = null;
     let commissionAmount = 0;
@@ -356,21 +427,18 @@ const verifySubscription = catchAsync(async (req, res) => {
 
     if (agentCode) {
       agent = await Agent.findOne({ agentCode: agentCode.toUpperCase(), isActive: true });
-      
+
       if (agent) {
-        // transaction.amount is already in Naira
-        // Calculate 6% commission on the amount (in Naira)
         const amountPaid = transaction.amount;
-        commissionAmount = Math.round(amountPaid * 0.06); // 6% of amount in Naira
-        
-        // Add referral to agent
+        commissionAmount = Math.round(amountPaid * 0.06);
+
         try {
           const existingReferral = agent.referrals.find(
-            r => r.referredUserId === providerId && r.referredUserType === 'provider'
+            r => r.referredUserId === providerId.toString() && r.referredUserType === 'provider'
           );
-          
+
           if (!existingReferral) {
-            await agent.addReferral(providerId, 'provider', commissionAmount);
+            await agent.addReferral(providerId.toString(), 'provider', commissionAmount);
             console.log(`Commission of ₦${commissionAmount} added to agent ${agent.agentCode}`);
           }
         } catch (referralError) {
@@ -382,10 +450,10 @@ const verifySubscription = catchAsync(async (req, res) => {
     const renewalDate = new Date();
     renewalDate.setDate(renewalDate.getDate() + 365);
 
-    // Update subscription - amount is in Naira
+    // Update subscription
     provider.subscription = {
       selectedPlan: plan,
-      amountPaid: transaction.amount, // Naira
+      amountPaid: transaction.amount,
       currency: transaction.currency || 'NGN',
       paidAt: new Date(),
       renewalDate: renewalDate,
@@ -393,6 +461,28 @@ const verifySubscription = catchAsync(async (req, res) => {
     };
 
     await provider.save();
+
+    // Create transaction record - using 'subscription' type
+    const balanceBefore = wallet.balance;
+    // Balance doesn't change since payment is direct via Paystack
+    await dB.transactions.create({
+      wallet: wallet._id,
+      owner: providerId.toString(),
+      type: 'subscription',
+      amount: transaction.amount,
+      balanceBefore: balanceBefore,
+      balanceAfter: wallet.balance,
+      description: `Subscription (${plan} plan) - ${transaction.currency || 'NGN'} ${transaction.amount}`,
+      reference: reference,
+      status: 'success',
+      metadata: {
+        plan: plan,
+        paystackData: transaction,
+        agentCode: agentCode,
+        commission: commissionAmount,
+        paymentMethod: 'paystack',
+      },
+    });
 
     const responseData = {
       subscription: {
@@ -419,6 +509,7 @@ const verifySubscription = catchAsync(async (req, res) => {
       message: agent ? 'Subscription activated successfully. Agent commission added!' : 'Subscription activated successfully.',
       data: responseData,
     });
+
   } catch (error) {
     console.error('Subscription verification error:', error);
     return res.status(500).json({

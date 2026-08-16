@@ -24,6 +24,7 @@ module.exports = {
   uploadFields: upload.fields([
     { name: 'image', maxCount: 1 },
     { name: 'coverImage', maxCount: 1 },
+     { name: 'photo', maxCount: 1 }, 
     { name: 'logo', maxCount: 1 },
     { name: 'selfie', maxCount: 1 },
     { name: 'document', maxCount: 1 },

@@ -561,6 +561,254 @@ const permanentDeleteDeactivatedAccounts = catchAsync(async (req, res) => {
     },
   });
 });
+
+
+const getProviderProfile = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+
+  const provider = await dB.providers
+    .findById(providerId)
+    .select('-password -verificationToken -verificationTokenExpiresAt -deletedAt')
+    .lean();
+
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  }
+
+  if (provider.isBanned || provider.isDeleted) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'This provider is not available');
+  }
+
+  // Get average rating
+  let avgRating = 0;
+  let reviewCount = 0;
+
+  try {
+    const ratingResult = await dB.reviews.aggregate([
+      { $match: { target: provider._id, targetType: 'provider' } },
+      { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
+    ]);
+
+    if (ratingResult.length > 0) {
+      avgRating = ratingResult[0].avg || 0;
+      reviewCount = ratingResult[0].count || 0;
+    }
+  } catch (error) {
+    console.log('Error calculating rating:', error);
+  }
+
+  // Get services count
+  const servicesCount = await dB.services.countDocuments({ 
+    provider: providerId, 
+    isActive: true 
+  });
+
+  // Get jobs completed (from bookings)
+  let jobsCompleted = 0;
+  try {
+    jobsCompleted = await dB.bookings.countDocuments({
+      provider: providerId,
+      status: 'completed',
+    });
+  } catch (error) {
+    console.log('Error counting jobs:', error);
+  }
+
+  // Format response
+  const formattedProvider = {
+    _id: provider._id,
+    firstName: provider.firstName,
+    lastName: provider.lastName,
+    fullName: provider.fullName,
+    email: provider.email,
+    phoneNumber: provider.phoneNumber,
+    accountType: provider.accountType,
+    service: provider.service || {},
+    location: provider.location || {},
+    profile: provider.profile || {},
+    business: provider.business || {},
+    bankDetails: provider.bankDetails || {},
+    kycStatus: provider.kycStatus,
+    subscription: provider.subscription || {},
+    isVerifiedPro: provider.isVerifiedPro || false,
+    isEmailVerified: provider.isEmailVerified || false,
+    isActive: provider.subscription?.isActive || false,
+    featuredUntil: provider.featuredUntil,
+    avgRating: Math.round(avgRating * 10) / 10,
+    reviewCount: reviewCount,
+    servicesCount: servicesCount,
+    jobsCompleted: jobsCompleted,
+    createdAt: provider.createdAt,
+    updatedAt: provider.updatedAt,
+  };
+
+  res.json({
+    success: true,
+    provider: formattedProvider,
+  });
+});
+
+// ============================================
+// GET PROVIDER SERVICES
+// ============================================
+const getProviderServices = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+
+  const provider = await dB.providers.findById(providerId);
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  }
+
+  const services = await dB.services
+    .find({ provider: providerId, isActive: true })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  res.json({
+    success: true,
+    services: services,
+  });
+});
+
+// ============================================
+// GET PROVIDER REVIEWS
+// ============================================
+const getProviderReviews = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+  const { page = 0, limit = 10 } = req.query;
+
+  const safePage = Math.max(0, Number(page));
+  const safeLimit = Math.min(50, Math.max(1, Number(limit)));
+
+  const provider = await dB.providers.findById(providerId);
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  }
+
+  const [reviews, total] = await Promise.all([
+    dB.reviews
+      .find({ target: providerId, targetType: 'provider' })
+      .sort({ createdAt: -1 })
+      .skip(safePage * safeLimit)
+      .limit(safeLimit)
+      .lean(),
+    dB.reviews.countDocuments({ target: providerId, targetType: 'provider' }),
+  ]);
+
+  // Format reviews
+  const formattedReviews = reviews.map(review => ({
+    _id: review._id,
+    reviewer: review.reviewer,
+    reviewerName: review.reviewerName || 'Anonymous',
+    reviewerAvatar: review.reviewerAvatar || null,
+    overall: review.overall || 0,
+    categories: review.categories || {},
+    text: review.text || '',
+    isVerified: review.isVerified || false,
+    createdAt: review.createdAt,
+  }));
+
+  res.json({
+    success: true,
+    reviews: formattedReviews,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total: total,
+      pages: Math.ceil(total / safeLimit),
+    },
+  });
+});
+
+
+// ============================================
+// GET PROVIDER PROFILE
+// ============================================
+const getProviderProfilePublic = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+
+  const provider = await dB.providers
+    .findById(providerId)
+    .select('-password -verificationToken -verificationTokenExpiresAt -deletedAt')
+    .lean();
+
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  }
+
+  if (provider.isBanned || provider.isDeleted) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'This provider is not available');
+  }
+
+  // Get average rating
+  let avgRating = 0;
+  let reviewCount = 0;
+
+  try {
+    const ratingResult = await dB.reviews.aggregate([
+      { $match: { target: provider._id, targetType: 'provider' } },
+      { $group: { _id: null, avg: { $avg: '$overall' }, count: { $sum: 1 } } },
+    ]);
+
+    if (ratingResult.length > 0) {
+      avgRating = ratingResult[0].avg || 0;
+      reviewCount = ratingResult[0].count || 0;
+    }
+  } catch (error) {
+    console.log('Error calculating rating:', error);
+  }
+
+  // Get services count
+  const servicesCount = await dB.services.countDocuments({ 
+    provider: providerId, 
+    isActive: true 
+  });
+
+  // Get jobs completed (from bookings)
+  let jobsCompleted = 0;
+  try {
+    jobsCompleted = await dB.bookings.countDocuments({
+      provider: providerId,
+      status: 'completed',
+    });
+  } catch (error) {
+    console.log('Error counting jobs:', error);
+  }
+
+  // Format response
+  const formattedProvider = {
+    _id: provider._id,
+    firstName: provider.firstName,
+    lastName: provider.lastName,
+    fullName: provider.fullName,
+    email: provider.email,
+    phoneNumber: provider.phoneNumber,
+    accountType: provider.accountType,
+    service: provider.service || {},
+    location: provider.location || {},
+    profile: provider.profile || {},
+    business: provider.business || {},
+    bankDetails: provider.bankDetails || {},
+    kycStatus: provider.kycStatus,
+    subscription: provider.subscription || {},
+    isVerifiedPro: provider.isVerifiedPro || false,
+    isEmailVerified: provider.isEmailVerified || false,
+    isActive: provider.subscription?.isActive || false,
+    featuredUntil: provider.featuredUntil,
+    avgRating: Math.round(avgRating * 10) / 10,
+    reviewCount: reviewCount,
+    servicesCount: servicesCount,
+    jobsCompleted: jobsCompleted,
+    createdAt: provider.createdAt,
+    updatedAt: provider.updatedAt,
+  };
+
+  res.json({
+    success: true,
+    provider: formattedProvider,
+  });
+});
+
 module.exports = {
   getMe,
   updateMe,
@@ -583,4 +831,7 @@ module.exports = {
   deactivateAccount,
   reactivateAccount,
   permanentDeleteDeactivatedAccounts,
+  getProviderServices,
+  getProviderProfilePublic,
+  getProviderReviews
 };

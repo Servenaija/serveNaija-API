@@ -5,6 +5,10 @@ const { dB } = require('../models');
 const notificationService = require('../services/notification.service');
 const { getIo } = require('../utils/io');
 const { uploadObject } = require('../utils/aws.s3.bucket');
+const Customer = require('../models/customer');
+const Provider = require('../models/provider');
+
+
 // ─────────────────────────────────────────
 // STORES
 // ─────────────────────────────────────────
@@ -120,7 +124,7 @@ const createProduct = catchAsync(async (req, res) => {
       // Upload each image to Cloudflare R2
       const uploadPromises = req.files.map(async (file, index) => {
         const key = `products/${store._id}/${Date.now()}-${index}-${file.originalname}`;
-        
+
         console.log('Uploading product image to R2...');
         console.log('Bucket:', process.env.R2_BUCKET_NAME);
         console.log('Key:', key);
@@ -184,12 +188,12 @@ const deleteProduct = catchAsync(async (req, res) => {
 const getStoreProducts = catchAsync(async (req, res) => {
   const { category, page = 0, limit = 20, showInactive } = req.query;
   const query = { store: req.params.storeId };
-  
+
   // Only filter by isActive if showInactive is not true
   if (showInactive !== 'true') {
     query.isActive = true;
   }
-  
+
   if (category) query.category = category;
 
   const safePage = Math.max(0, Number(page));
@@ -199,7 +203,7 @@ const getStoreProducts = catchAsync(async (req, res) => {
     .sort({ createdAt: -1 })
     .skip(safePage * safeLimit)
     .limit(safeLimit);
-    
+
   res.json({ products });
 });
 
@@ -260,72 +264,291 @@ const getFeaturedProducts = catchAsync(async (req, res) => {
 });
 
 const getTrendingProducts = catchAsync(async (req, res) => {
+  const { page = 0, limit = 12, category } = req.query;
+
+  const safePage = Math.max(0, Number(page));
+  const safeLimit = Math.min(50, Math.max(1, Number(limit)));
+
+  // Build the base query
+  const baseQuery = { isActive: true };
+
+  // Add category filter if provided
+  if (category && category !== 'All') {
+    baseQuery.category = category;
+  }
+
+  // Get products that have been sold in the last 7 days
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const products = await dB.products
-    .find({ isActive: true, createdAt: { $gte: sevenDaysAgo } })
+
+  // First, try to get products sold in the last 7 days with highest sales
+  const trendingProducts = await dB.products
+    .find({
+      ...baseQuery,
+      createdAt: { $gte: sevenDaysAgo },
+      soldCount: { $gt: 0 }
+    })
     .sort({ soldCount: -1, rating: -1 })
-    .limit(12)
-    .populate('store', 'name logo');
-  res.json({ products });
+    .limit(safeLimit)
+    .populate('store', 'name logo')
+    .lean();
+
+  // If we have enough trending products, return them
+  if (trendingProducts.length >= Math.min(safeLimit, 6)) {
+    const total = await dB.products.countDocuments({
+      ...baseQuery,
+      createdAt: { $gte: sevenDaysAgo },
+      soldCount: { $gt: 0 }
+    });
+
+    return res.json({
+      products: trendingProducts,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total: total,
+        pages: Math.ceil(total / safeLimit),
+      },
+      isTrending: true,
+    });
+  }
+
+  // If not enough trending products, get the most popular products overall
+  const skip = safePage * safeLimit;
+
+  const [allProducts, total] = await Promise.all([
+    dB.products
+      .find(baseQuery)
+      .sort({ soldCount: -1, rating: -1, createdAt: -1 })
+      .skip(skip)
+      .limit(safeLimit)
+      .populate('store', 'name logo')
+      .lean(),
+    dB.products.countDocuments(baseQuery)
+  ]);
+
+  res.json({
+    products: allProducts,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total: total,
+      pages: Math.ceil(total / safeLimit),
+    },
+    isTrending: false,
+  });
 });
 
 // ─────────────────────────────────────────
 // ORDERS
 // ─────────────────────────────────────────
-
 const createOrder = catchAsync(async (req, res) => {
   const { storeId, items, deliveryAddress, paymentMethod, paystackReference } = req.body;
 
-  const store = await dB.stores.findById(storeId);
-  if (!store || !store.isActive) throw new ApiError(httpStatus.NOT_FOUND, 'Store not found.');
+  console.log('Create order request:', JSON.stringify({ storeId, items, deliveryAddress, paymentMethod }, null, 2));
 
-  // Resolve product prices
-  const productIds = items.map((i) => i.productId);
-  const products = await dB.products.find({ _id: { $in: productIds }, isActive: true });
-  const productMap = Object.fromEntries(products.map((p) => [p._id.toString(), p]));
+  try {
+    // Validate required fields
+    if (!storeId) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Store ID is required');
+    }
+    
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'At least one item is required');
+    }
+    
+    if (!deliveryAddress || !deliveryAddress.street || !deliveryAddress.city || !deliveryAddress.state) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Complete delivery address is required');
+    }
 
-  const resolvedItems = [];
-  let subtotal = 0;
-  for (const item of items) {
-    const product = productMap[item.productId];
-    if (!product) throw new ApiError(httpStatus.BAD_REQUEST, `Product ${item.productId} not found.`);
-    if (product.stock < item.quantity) throw new ApiError(httpStatus.BAD_REQUEST, `${product.name} is out of stock.`);
-    resolvedItems.push({
-      product: product._id,
-      name: product.name,
-      price: product.price,
-      quantity: item.quantity,
-      image: product.images?.[0] || null
+    console.log('Step 1: Finding store...');
+    const store = await dB.stores.findById(storeId);
+    if (!store || !store.isActive) {
+      console.log('Store not found or inactive:', storeId);
+      throw new ApiError(httpStatus.NOT_FOUND, 'Store not found or inactive.');
+    }
+    console.log('Store found:', store._id);
+
+    // Resolve product prices
+    console.log('Step 2: Finding products...');
+    const productIds = items.map((i) => i.productId);
+    console.log('Product IDs:', productIds);
+    
+    const products = await dB.products.find({ _id: { $in: productIds }, isActive: true });
+    console.log('Products found:', products.length);
+    
+    if (products.length !== items.length) {
+      console.log('Product count mismatch. Expected:', items.length, 'Found:', products.length);
+      throw new ApiError(httpStatus.BAD_REQUEST, 'One or more products not found or inactive.');
+    }
+    
+    const productMap = Object.fromEntries(products.map((p) => [p._id.toString(), p]));
+
+    console.log('Step 3: Building order items...');
+    const resolvedItems = [];
+    let subtotal = 0;
+    for (const item of items) {
+      const product = productMap[item.productId];
+      if (!product) {
+        console.log('Product not found:', item.productId);
+        throw new ApiError(httpStatus.BAD_REQUEST, `Product ${item.productId} not found.`);
+      }
+      if (product.stock < item.quantity) {
+        console.log('Insufficient stock for:', product.name, 'Stock:', product.stock, 'Requested:', item.quantity);
+        throw new ApiError(httpStatus.BAD_REQUEST, `${product.name} is out of stock.`);
+      }
+      resolvedItems.push({
+        product: product._id,
+        name: product.name,
+        price: product.price,
+        quantity: item.quantity,
+        image: product.images?.[0] || null
+      });
+      subtotal += product.price * item.quantity;
+    }
+    console.log('Subtotal:', subtotal);
+
+    // Calculate fees (10% each)
+    const deliveryFee = Math.round(subtotal * 0.10);
+    const serviceFee = Math.round(subtotal * 0.10);
+    const total = subtotal + deliveryFee + serviceFee;
+    console.log('Total:', total, 'DeliveryFee:', deliveryFee, 'ServiceFee:', serviceFee);
+
+    // Map payment method to valid enum values
+    let validPaymentMethod = 'card';
+    if (paymentMethod === 'online' || paymentMethod === 'card') {
+      validPaymentMethod = 'card';
+    } else if (paymentMethod === 'bank_transfer' || paymentMethod === 'transfer') {
+      validPaymentMethod = 'bank_transfer';
+    } else if (paymentMethod === 'cod' || paymentMethod === 'cash') {
+      validPaymentMethod = 'cod';
+    } else if (paymentMethod === 'wallet') {
+      validPaymentMethod = 'wallet';
+    }
+    console.log('Payment method:', validPaymentMethod);
+
+    console.log('Step 4: Creating order...');
+    const order = await dB.orders.create({
+      buyer: req.user._id,
+      store: storeId,
+      items: resolvedItems,
+      subtotal: subtotal,
+      deliveryFee: deliveryFee,
+      total: total,
+      deliveryAddress: {
+        street: deliveryAddress.street,
+        city: deliveryAddress.city,
+        state: deliveryAddress.state,
+        landmark: deliveryAddress.landmark || '',
+        phone: deliveryAddress.phone || '',
+      },
+      paymentMethod: validPaymentMethod,
+      paystackReference: paystackReference || null,
+      paymentStatus: 'paid',
+      status: 'confirmed',
+      estimatedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
     });
-    subtotal += product.price * item.quantity;
-  }
+    console.log('Order created:', order._id);
 
-  const DELIVERY_FEE = 800; // Fixed delivery fee or calculate as needed
-  const total = subtotal + DELIVERY_FEE;
+    // Decrement stock
+    console.log('Step 5: Updating stock...');
+    for (const item of resolvedItems) {
+      await dB.products.findByIdAndUpdate(item.product, {
+        $inc: { stock: -item.quantity, soldCount: item.quantity }
+      });
+    }
+    console.log('Stock updated');
 
-  const order = await dB.orders.create({
-    buyer: req.user._id,
-    store: storeId,
-    items: resolvedItems,
-    subtotal: subtotal,
-    deliveryFee: DELIVERY_FEE,
-    total: total,
-    deliveryAddress: deliveryAddress,
-    paymentMethod: paymentMethod || 'cod',
-    paystackReference: paystackReference || null,
-    paymentStatus: paymentMethod === 'cod' ? 'pending' : 'paid',
-    status: 'confirmed',
-    estimatedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
-  });
+    // ============================================
+    // SEND NOTIFICATIONS
+    // ============================================
+    console.log('Step 6: Sending notifications...');
 
-  // Decrement stock
-  for (const item of resolvedItems) {
-    await dB.products.findByIdAndUpdate(item.product, {
-      $inc: { stock: -item.quantity, soldCount: item.quantity }
+    // Get buyer details
+    const buyer = await Customer.findById(req.user._id).select('fullName email');
+    const buyerName = buyer?.fullName || 'Customer';
+    const orderIdShort = order._id.toString().slice(-6);
+
+    // 1. Send notification to BUYER
+    try {
+      await notificationService.sendPushNotification({
+        userId: req.user._id.toString(),
+        actorType: 'customer',
+        title: 'Order Confirmed',
+        body: `Your order #${orderIdShort} has been confirmed. Estimated delivery: 3-5 business days.`,
+        type: 'system',
+        data: { 
+          orderId: order._id.toString(), 
+          screen: 'order-details',
+          amount: total,
+        },
+      });
+      console.log('Buyer notification sent');
+    } catch (error) {
+      console.error('Error sending buyer notification:', error.message);
+    }
+
+    // 2. Send notification to SELLER
+    try {
+      const provider = await Provider.findById(store.provider).select('fullName email');
+      const sellerUserId = store.provider.toString();
+
+      await notificationService.sendPushNotification({
+        userId: sellerUserId,
+        actorType: 'provider',
+        title: 'New Order Received',
+        body: `You have a new order from ${buyerName}. Order #${orderIdShort} - ₦${total.toLocaleString()}`,
+        type: 'system',
+        data: { 
+          orderId: order._id.toString(), 
+          screen: 'store-orders',
+          buyerName: buyerName,
+          total: total,
+          items: resolvedItems.length,
+        },
+      });
+      console.log('Seller notification sent');
+    } catch (error) {
+      console.error('Error sending seller notification:', error.message);
+    }
+
+    // 3. Real-time socket events
+    try {
+      const io = getIo();
+      if (io) {
+        io.to(`provider_${store.provider.toString()}`).emit('new_order', {
+          orderId: order._id.toString(),
+          buyerName: buyerName,
+          total: total,
+          items: resolvedItems.length,
+          createdAt: order.createdAt,
+          order: order,
+        });
+        
+        io.to('admin_room').emit('new_order', {
+          orderId: order._id.toString(),
+          store: store.name,
+          storeId: store._id.toString(),
+          buyerName: buyerName,
+          total: total,
+          items: resolvedItems.length,
+        });
+        
+        console.log('Socket events emitted');
+      }
+    } catch (error) {
+      console.error('Error emitting socket events:', error.message);
+    }
+
+    res.status(httpStatus.CREATED).json({ 
+      success: true, 
+      order 
     });
-  }
 
-  res.status(httpStatus.CREATED).json({ order });
+  } catch (error) {
+    console.error('Order creation error:', error);
+    console.error('Error stack:', error.stack);
+    throw error;
+  }
 });
 
 const getOrder = catchAsync(async (req, res) => {
@@ -380,7 +603,7 @@ const updateOrderStatus = catchAsync(async (req, res) => {
       body: statusMessages[status],
       type: 'booking',
       data: { orderId: order._id.toString(), screen: 'order-details' },
-    }).catch(() => {});
+    }).catch(() => { });
   }
 
   res.json({ order });

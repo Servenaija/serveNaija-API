@@ -47,7 +47,7 @@ const verifyTransaction = async (reference) => {
 
     return {
       status: transaction.status,
-      amount: transaction.amount / 100, 
+      amount: transaction.amount / 100,
       currency: transaction.currency,
       reference: transaction.reference,
       metadata: transaction.metadata,
@@ -119,29 +119,29 @@ const saveBusinessContact = catchAsync(async (req, res) => {
   const userId = req.user._id;
   const { businessEmail, contactPhone, businessDescription, staffSize } = req.body;
 
-  if (!businessEmail || !businessEmail.trim()) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Business email is required');
+  const updateData = {};
+
+  // Only require fields if they are provided
+  if (businessEmail !== undefined && businessEmail.trim()) {
+    updateData['business.businessEmail'] = businessEmail.trim().toLowerCase();
   }
-  if (!contactPhone || !contactPhone.trim()) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Contact phone is required');
+  if (contactPhone !== undefined && contactPhone.trim()) {
+    updateData['business.contactPhone'] = contactPhone.trim();
   }
-  if (!businessDescription || !businessDescription.trim()) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Business description is required');
+  if (businessDescription !== undefined && businessDescription.trim()) {
+    updateData['business.businessDescription'] = businessDescription.trim();
   }
-  if (!staffSize || !staffSize.trim()) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Staff size is required');
+  if (staffSize !== undefined && staffSize.trim()) {
+    updateData['business.staffSize'] = staffSize.trim();
+  }
+
+  if (Object.keys(updateData).length === 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'At least one field is required');
   }
 
   const provider = await dB.providers.findByIdAndUpdate(
     userId,
-    {
-      $set: {
-        'business.businessEmail': businessEmail.trim().toLowerCase(),
-        'business.contactPhone': contactPhone.trim(),
-        'business.businessDescription': businessDescription.trim(),
-        'business.staffSize': staffSize.trim(),
-      },
-    },
+    { $set: updateData },
     { new: true }
   );
 
@@ -155,13 +155,14 @@ const saveBusinessContact = catchAsync(async (req, res) => {
     data: {
       step: 2,
       completed: true,
-      businessEmail: provider.business.businessEmail,
-      contactPhone: provider.business.contactPhone,
-      businessDescription: provider.business.businessDescription,
-      staffSize: provider.business.staffSize,
+      businessEmail: provider.business?.businessEmail,
+      contactPhone: provider.business?.contactPhone,
+      businessDescription: provider.business?.businessDescription,
+      staffSize: provider.business?.staffSize,
     },
   });
 });
+
 
 // ============================================
 // STEP 3: Location
@@ -297,11 +298,22 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
   let imageUrl = null;
   let coverImageUrl = null;
 
-  // Handle profile photo upload
-  if (req.file) {
+  console.log('Files received:', req.files);
+  console.log('Body received:', req.body);
+
+  // Handle profile photo upload - check both 'photo' and 'image' fields
+  const photoFile = (req.files && req.files.photo && req.files.photo.length > 0)
+    ? req.files.photo[0]
+    : (req.files && req.files.image && req.files.image.length > 0)
+      ? req.files.image[0]
+      : null;
+
+  if (photoFile) {
     try {
-      const file = req.file;
+      const file = photoFile;
       const key = `business/${userId}/profile/${Date.now()}-${file.originalname}`;
+
+      console.log('Uploading profile photo:', key);
 
       const uploadResult = await uploadObject({
         Bucket: process.env.R2_BUCKET_NAME,
@@ -315,6 +327,8 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
       if (!imageUrl) {
         throw new Error('Upload succeeded but no URL returned');
       }
+
+      console.log('Profile photo uploaded:', imageUrl);
     } catch (uploadError) {
       console.error('R2 upload failed:', uploadError);
       throw new ApiError(
@@ -330,6 +344,8 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
       const file = req.files.coverImage[0];
       const key = `business/${userId}/cover/${Date.now()}-${file.originalname}`;
 
+      console.log('Uploading cover image:', key);
+
       const uploadResult = await uploadObject({
         Bucket: process.env.R2_BUCKET_NAME,
         Key: key,
@@ -342,6 +358,8 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
       if (!coverImageUrl) {
         throw new Error('Upload succeeded but no URL returned');
       }
+
+      console.log('Cover image uploaded:', coverImageUrl);
     } catch (uploadError) {
       console.error('R2 cover image upload failed:', uploadError);
       throw new ApiError(
@@ -352,13 +370,15 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
   }
 
   // If photo URL is provided in body (base64/URL from frontend)
-  if (req.body.photo && !req.file) {
+  if (req.body.photo && !photoFile) {
     imageUrl = req.body.photo;
+    console.log('Photo URL from body:', imageUrl);
   }
 
   // If cover image URL is provided in body
-  if (req.body.coverImage && !(req.files && req.files.coverImage)) {
+  if (req.body.coverImage && !(req.files && req.files.coverImage && req.files.coverImage.length > 0)) {
     coverImageUrl = req.body.coverImage;
+    console.log('Cover URL from body:', coverImageUrl);
   }
 
   const updateData = {};
@@ -375,6 +395,13 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
     updateData['profile.bio'] = req.body.bio;
   }
 
+  console.log('Update data:', updateData);
+
+  // Only update if there's data to update
+  if (Object.keys(updateData).length === 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'No data to update');
+  }
+
   const provider = await dB.providers.findByIdAndUpdate(
     userId,
     { $set: updateData },
@@ -385,6 +412,8 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
   }
 
+  console.log('Updated provider profile:', provider.profile);
+
   res.status(httpStatus.OK).json({
     success: true,
     message: 'Business photos saved successfully',
@@ -393,7 +422,6 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
       completed: true,
       photo: provider.profile?.photo,
       coverImage: provider.profile?.coverImage,
-      bio: provider.profile?.bio,
     },
   });
 });
@@ -425,7 +453,6 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
 
   const totalAmount = REGISTRATION_FEE + PLAN_PRICES[selectedPlan];
 
-  // Verify transaction with Paystack
   const verification = await verifyTransaction(paystackReference);
   if (verification.status !== 'success') {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Payment verification failed');
@@ -438,24 +465,25 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
     );
   }
 
-  // Calculate commission for agent if agent code exists
+  // Agent commission
   let agent = null;
   let commissionAmount = 0;
   const agentCode = provider.agentCode || verification.metadata?.agentCode;
 
   if (agentCode) {
     agent = await dB.agents.findOne({ agentCode: agentCode.toUpperCase(), isActive: true });
-    
+
     if (agent) {
       commissionAmount = Math.round(totalAmount * 0.06);
-      
+
       try {
         const existingReferral = agent.referrals.find(
           r => r.referredUserId === userId.toString() && r.referredUserType === 'provider'
         );
-        
+
         if (!existingReferral) {
           await agent.addReferral(userId.toString(), 'provider', commissionAmount);
+          console.log(`Commission of ₦${commissionAmount} added to agent ${agent.agentCode} pending payout`);
         }
       } catch (referralError) {
         console.error('Error adding referral to agent:', referralError);
@@ -475,10 +503,11 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
     isActive: true,
   };
   provider.accountType = 'business';
-  provider.kycVerified = true;
+  provider.kycStatus = 'approved';
 
   await provider.save();
 
+  // Get or create wallet
   let wallet = await dB.wallets.findOne({ owner: userId.toString() });
   if (!wallet) {
     wallet = await dB.wallets.create({
@@ -487,21 +516,23 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
     });
   }
 
+  // Use 'subscription' type instead of 'debit'
   await dB.transactions.create({
     wallet: wallet._id,
     owner: userId.toString(),
-    type: 'debit',
+    type: 'subscription', // Changed from 'debit'
     amount: totalAmount,
     balanceBefore: wallet.balance,
-    balanceAfter: wallet.balance,
+    balanceAfter: wallet.balance, // Balance doesn't change since payment is direct
     description: `Business registration (${selectedPlan} plan) with registration fee`,
     reference: paystackReference,
     status: 'success',
-    metadata: { 
-      plan: selectedPlan, 
+    metadata: {
+      plan: selectedPlan,
       registrationFee: REGISTRATION_FEE,
       agentCode: agentCode,
       commission: commissionAmount,
+      paymentMethod: 'paystack',
     },
   });
 
@@ -515,7 +546,7 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
     body: `Your ${selectedPlan} business plan is now active. Welcome to ServeNaija Business!`,
     type: 'system',
     data: { screen: 'home' },
-  }).catch(() => {});
+  }).catch(() => { });
 
   const sanitizedUser = sanitizeUser(provider);
 
@@ -533,21 +564,29 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
   };
 
   if (agent) {
-    const stats = agent.getStats ? agent.getStats() : { wallet: agent.wallet, totalReferrals: agent.referrals?.length || 0 };
+    const stats = agent.getStats();
     responseData.agent = {
       agentCode: agent.agentCode,
       commission: commissionAmount,
-      wallet: stats.wallet,
+      wallet: {
+        balance: stats.wallet.balance,
+        totalEarned: stats.wallet.totalEarned,
+        pendingPayout: stats.wallet.pendingPayout,
+        totalPaidOut: stats.wallet.totalPaidOut,
+      },
       totalReferrals: stats.totalReferrals,
+      customerReferrals: stats.customerReferrals,
+      providerReferrals: stats.providerReferrals,
     };
   }
 
   res.status(httpStatus.CREATED).json({
     success: true,
-    message: agent ? 'Business registration complete. Agent commission added!' : 'Business registration complete.',
+    message: agent ? 'Business registration complete. Agent commission added to pending payout!' : 'Business registration complete.',
     data: responseData,
   });
 });
+
 
 // ============================================
 // GET Onboarding Progress

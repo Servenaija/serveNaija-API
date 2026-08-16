@@ -39,7 +39,7 @@ const updateProfile = {
 
 const submitKYC = {
   body: Joi.object().keys({
-    kycVerified: Joi.boolean().required()
+    status: Joi.string().valid('pending', 'approved', 'failed').required()
   })
 };
 

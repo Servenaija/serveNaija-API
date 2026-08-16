@@ -93,4 +93,21 @@ router.route('/subscription/upgrade')
   .post(verifyToken, (req, res, next) => { req.body.isUpgrade = true; next(); }, providerController.manageSubscription)
   .all(unAllowedMethod);
 
+  // ─── PUBLIC ROUTES ───
+
+// Get provider profile
+router.route('/:providerId')
+  .get(providerController.getProviderProfilePublic)
+  .all(unAllowedMethod);
+
+// Get provider services
+router.route('/:providerId/services')
+  .get(providerController.getProviderServices)
+  .all(unAllowedMethod);
+
+// Get provider reviews
+router.route('/:providerId/reviews')
+  .get(providerController.getProviderReviews)
+  .all(unAllowedMethod);
+
 module.exports = router;

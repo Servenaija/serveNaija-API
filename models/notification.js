@@ -11,7 +11,7 @@ const notificationSchema = new mongoose.Schema(
     // notification category for filtering/grouping
     type: {
       type: String,
-      enum: ['booking', 'payment', 'kyc', 'chat', 'call', 'system', 'promotion'],
+      enum: ['booking', 'payment', 'kyc', 'chat', 'call', 'system', 'promotion', 'order', 'review', 'wallet', 'other'],
       default: 'system',
     },
 

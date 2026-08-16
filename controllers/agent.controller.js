@@ -2,6 +2,7 @@ const httpStatus = require('http-status');
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
+const axios = require('axios');
 
 // Register as agent (supports both customer and provider)
 const registerAsAgent = catchAsync(async (req, res) => {

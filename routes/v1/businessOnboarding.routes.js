@@ -18,7 +18,7 @@ router.route('/step1')
 
 // Step 2: Contact Details
 router.route('/step2')
-  .post(verifyToken, businessOnboardingController.saveBusinessContact)
+  .put(verifyToken, businessOnboardingController.saveBusinessContact)
   .all(unAllowedMethod);
 
 // Step 3: Location
@@ -33,7 +33,7 @@ router.route('/step4')
 
 // Step 5: Photos (with file upload)
 router.route('/step5')
-  .post(
+  .put(
     verifyToken,
     uploadFields,
     businessOnboardingController.saveBusinessPhotos

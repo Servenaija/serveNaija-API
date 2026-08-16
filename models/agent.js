@@ -59,8 +59,8 @@ const agentSchema = new mongoose.Schema(
       pendingPayout: { type: Number, default: 0, min: 0 },
       totalPaidOut: { type: Number, default: 0, min: 0 },
     },
+    
 
-    // Legacy earnings fields (keep for backward compatibility)
     earnings: { 
       type: Number, 
       default: 0,

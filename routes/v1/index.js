@@ -18,12 +18,16 @@ const promoteRoute = require('./promote.route');
 const supportRoutes = require('./support.routes');
 const subscriptionRoute = require('./subcription.route');
 const businessOnboardingRoute = require('./businessOnboarding.routes');
+const publicRoutes = require('./public.routes');
+const customerRoute = require('./customer.route');
 
 const router = express.Router();
 
 const defaultRoutes = [
   { path: '/auth',          route: authRoute },
   { path: '/promote',       route: promoteRoute },
+  { path: '/customer',      route: customerRoute },
+  { path: '/public',        route: publicRoutes },
   { path: '/business-onboarding', route: businessOnboardingRoute },
   { path: '/subscriptions', route: subscriptionRoute },
   { path: '/admins',        route: adminRoute },

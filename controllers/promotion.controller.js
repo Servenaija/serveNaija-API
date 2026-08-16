@@ -159,6 +159,334 @@ const getActiveAds = catchAsync(async (req, res) => {
   res.json({ ads });
 });
 
+
+const getActiveAdss = catchAsync(async (req, res) => {
+  const { type, limit = 20, page = 0, latitude, longitude, radius = 50 } = req.query;
+  
+  const query = {
+    type: 'ad',
+    status: 'active',
+    endDate: { $gt: new Date() }
+  };
+  
+  if (type) query.plan = type;
+  
+  const safeLimit = Math.min(50, Math.max(1, Number(limit)));
+  const safePage = Math.max(0, Number(page));
+  
+  // Build pipeline with location sorting if coordinates provided
+  let pipeline = [];
+  
+  // Match active ads
+  pipeline.push({
+    $match: query
+  });
+  
+  // Lookup provider details
+  pipeline.push({
+    $lookup: {
+      from: 'providers',
+      localField: 'provider',
+      foreignField: '_id',
+      as: 'providerData'
+    }
+  });
+  
+  pipeline.push({
+    $unwind: '$providerData'
+  });
+  
+  // Filter providers that are not banned
+  pipeline.push({
+    $match: {
+      'providerData.isBanned': false
+    }
+  });
+  
+  // Add location fields if coordinates provided
+  if (latitude && longitude) {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+    
+    pipeline.push({
+      $addFields: {
+        location: {
+          type: 'Point',
+          coordinates: [
+            { $ifNull: ['$providerData.location.coordinates.longitude', 0] },
+            { $ifNull: ['$providerData.location.coordinates.latitude', 0] }
+          ]
+        }
+      }
+    });
+    
+    pipeline.push({
+      $addFields: {
+        distance: {
+          $multiply: [
+            6371, // Earth's radius in km
+            {
+              $acos: {
+                $min: [
+                  1,
+                  {
+                    $add: [
+                      { $multiply: [{ $sin: { $degreesToRadians: lat } }, { $sin: { $degreesToRadians: { $arrayElemAt: ['$location.coordinates', 1] } } }] },
+                      { $multiply: [{ $cos: { $degreesToRadians: lat } }, { $cos: { $degreesToRadians: { $arrayElemAt: ['$location.coordinates', 1] } } }, { $cos: { $subtract: [lng, { $arrayElemAt: ['$location.coordinates', 0] }] } }] }
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    });
+    
+    // Filter by radius
+    pipeline.push({
+      $match: {
+        distance: { $lte: parseFloat(radius) }
+      }
+    });
+  }
+  
+  // Get total count before pagination
+  const countPipeline = [...pipeline];
+  countPipeline.push({ $count: 'total' });
+  
+  // Add sorting and pagination
+  if (latitude && longitude) {
+    pipeline.push({ $sort: { distance: 1 } });
+  } else {
+    pipeline.push({ $sort: { createdAt: -1 } });
+  }
+  
+  pipeline.push({ $skip: safePage * safeLimit });
+  pipeline.push({ $limit: safeLimit });
+  
+  // Execute queries
+  const [ads, countResult] = await Promise.all([
+    dB.promotions.aggregate(pipeline),
+    dB.promotions.aggregate(countPipeline)
+  ]);
+  
+  const total = countResult[0]?.total || 0;
+  
+  // Format ads for frontend
+  const formattedAds = ads.map(ad => ({
+    id: ad._id,
+    plan: ad.plan,
+    type: ad.type,
+    amount: ad.amount,
+    startDate: ad.startDate,
+    endDate: ad.endDate,
+    distance: ad.distance || null,
+    provider: {
+      id: ad.providerData._id,
+      fullName: ad.providerData.fullName,
+      photo: ad.providerData.profile?.photo || null,
+      category: ad.providerData.service?.category || null,
+      location: ad.providerData.location?.city || null,
+      rating: ad.providerData.rating || 0,
+      coordinates: ad.providerData.location?.coordinates || null,
+    }
+  }));
+  
+  res.json({
+    success: true,
+    data: {
+      ads: formattedAds,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total: total,
+        pages: Math.ceil(total / safeLimit),
+      }
+    }
+  });
+});
+
+// ─── GET FEATURED PROVIDERS WITH PROXIMITY ───
+const getFeaturedProviderss = catchAsync(async (req, res) => {
+  const { limit = 10, category, latitude, longitude, radius = 50 } = req.query;
+  
+  const query = {
+    isBanned: false,
+    featuredUntil: { $gt: new Date() }
+  };
+  
+  if (category) query['service.category'] = category;
+  
+  const safeLimit = Math.min(20, Math.max(1, Number(limit)));
+  
+  let providers = [];
+  
+  if (latitude && longitude) {
+    const lat = parseFloat(latitude);
+    const lng = parseFloat(longitude);
+    
+    // Use geospatial aggregation for proximity
+    providers = await dB.providers.aggregate([
+      { $match: query },
+      {
+        $addFields: {
+          location: {
+            type: 'Point',
+            coordinates: [
+              { $ifNull: ['$location.coordinates.longitude', 0] },
+              { $ifNull: ['$location.coordinates.latitude', 0] }
+            ]
+          }
+        }
+      },
+      {
+        $addFields: {
+          distance: {
+            $multiply: [
+              6371,
+              {
+                $acos: {
+                  $min: [
+                    1,
+                    {
+                      $add: [
+                        { $multiply: [{ $sin: { $degreesToRadians: lat } }, { $sin: { $degreesToRadians: { $arrayElemAt: ['$location.coordinates', 1] } } }] },
+                        { $multiply: [{ $cos: { $degreesToRadians: lat } }, { $cos: { $degreesToRadians: { $arrayElemAt: ['$location.coordinates', 1] } } }, { $cos: { $subtract: [lng, { $arrayElemAt: ['$location.coordinates', 0] }] } }] }
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      },
+      { $match: { distance: { $lte: parseFloat(radius) } } },
+      { $sort: { distance: 1 } },
+      { $limit: safeLimit },
+      {
+        $project: {
+          _id: 1,
+          fullName: 1,
+          'profile.photo': 1,
+          'service.category': 1,
+          'location.city': 1,
+          rating: 1,
+          featuredUntil: 1,
+          distance: 1,
+          'location.coordinates': 1,
+        }
+      }
+    ]);
+  } else {
+    // No location, just get featured providers
+    providers = await dB.providers
+      .find(query)
+      .select('fullName profile.photo service.category location.city rating featuredUntil location.coordinates')
+      .sort({ featuredUntil: -1 })
+      .limit(safeLimit)
+      .lean();
+  }
+  
+  const formattedProviders = providers.map(provider => ({
+    id: provider._id,
+    fullName: provider.fullName,
+    photo: provider.profile?.photo || null,
+    category: provider.service?.category || null,
+    location: provider.location?.city || null,
+    rating: provider.rating || 0,
+    featuredUntil: provider.featuredUntil,
+    distance: provider.distance || null,
+    coordinates: provider.location?.coordinates || null,
+  }));
+  
+  res.json({
+    success: true,
+    data: {
+      providers: formattedProviders,
+      count: formattedProviders.length,
+    }
+  });
+});
+
+const getAdDetails = catchAsync(async (req, res) => {
+  const { adId } = req.params;
+  
+  const ad = await dB.promotions
+    .findOne({
+      _id: adId,
+      type: 'ad',
+      status: 'active',
+      endDate: { $gt: new Date() }
+    })
+    .populate('provider', 'fullName profile.photo profile.coverImage service.category location.city rating bio');
+  
+  if (!ad) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Ad not found or expired.');
+  }
+  
+  res.json({
+    success: true,
+    data: {
+      id: ad._id,
+      plan: ad.plan,
+      type: ad.type,
+      amount: ad.amount,
+      startDate: ad.startDate,
+      endDate: ad.endDate,
+      image: ad.image || ad.imageUrl || null,
+      provider: {
+        id: ad.provider._id,
+        fullName: ad.provider.fullName,
+        photo: ad.provider.profile?.photo || null,
+        coverImage: ad.provider.profile?.coverImage || null,
+        category: ad.provider.service?.category || null,
+        location: ad.provider.location?.city || null,
+        rating: ad.provider.rating || 0,
+        bio: ad.provider.bio || null,
+      }
+    }
+  });
+});
+
+// ─── GET PROVIDER ADS ───
+const getProviderAds = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+  const { limit = 10 } = req.query;
+  
+  const query = {
+    provider: providerId,
+    type: 'ad',
+    status: 'active',
+    endDate: { $gt: new Date() }
+  };
+  
+  const safeLimit = Math.min(20, Math.max(1, Number(limit)));
+  
+  const ads = await dB.promotions
+    .find(query)
+    .sort({ createdAt: -1 })
+    .limit(safeLimit)
+    .lean();
+  
+  const formattedAds = ads.map(ad => ({
+    id: ad._id,
+    plan: ad.plan,
+    amount: ad.amount,
+    startDate: ad.startDate,
+    endDate: ad.endDate,
+    image: ad.image || ad.imageUrl || null,
+  }));
+  
+  res.json({
+    success: true,
+    data: {
+      ads: formattedAds,
+      count: formattedAds.length,
+    }
+  });
+});
 module.exports = {
   purchaseFeatured,
   getMyFeatured,
@@ -166,4 +494,8 @@ module.exports = {
   purchaseAd,
   getMyAds,
   getActiveAds,
+  getFeaturedProviderss,
+  getActiveAdss,
+   getAdDetails,       
+  getProviderAds,
 };

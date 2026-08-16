@@ -1,3 +1,4 @@
+// routes/promotion.routes.js
 const express = require('express');
 const { verifyToken } = require('../../middlewares/verify');
 const { allowedMethod } = require('../../middlewares/headers');
@@ -36,9 +37,24 @@ router.route('/ads/my')
   .get(verifyToken, promotionController.getMyAds)
   .all(unAllowedMethod);
 
-// Get active ads (public)
-router.route('/ads')
-  .get(promotionController.getActiveAds)
+// Get active ads with proximity (public) - FOR CUSTOMERS
+router.route('/ads/customers')
+  .get(promotionController.getActiveAdss)  // Using the proximity version
+  .all(unAllowedMethod);
+
+// Get featured providers with proximity (public) - FOR CUSTOMERS
+router.route('/ads/providers-customers')
+  .get(promotionController.getFeaturedProviderss)  // Using the proximity version
+  .all(unAllowedMethod);
+
+// Get single ad details (public) - ADD THIS
+router.route('/ads/:adId')
+  .get(promotionController.getAdDetails)
+  .all(unAllowedMethod);
+
+// Get provider's ads (public) - ADD THIS
+router.route('/providers/:providerId/ads')
+  .get(promotionController.getProviderAds)
   .all(unAllowedMethod);
 
 module.exports = router;

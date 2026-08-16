@@ -37,7 +37,7 @@ const mongoOptions = {
   serverSelectionTimeoutMS: 5000,
   socketTimeoutMS: 45000,
   // Ensure indexes are created on startup
-  autoIndex: process.env.NODE_ENV !== 'production', // disable in prod (run migrations instead)
+  autoIndex: true, 
 };
 
 const mongooseInstance = mongoose.connect(mongooseP.url, mongoOptions);
