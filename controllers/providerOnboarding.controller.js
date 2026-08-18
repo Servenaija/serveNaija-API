@@ -8,8 +8,8 @@ const { uploadObject } = require('../utils/aws.s3.bucket');
 const { sendPushNotification } = require('../services/notification.service');
 const axios = require('axios');
 const Agent = require('../models/agent');
-
-
+const Transactions = require('../models/transaction');
+const { dB } = require('../models');
 // Step 1: Choose Account Type
 const chooseAccountType = catchAsync(async (req, res) => {
   const { accountType } = req.body;
@@ -359,8 +359,7 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
-    // Check if reference already used
-    const existingTx = await dB.transactions.findOne({ reference });
+    const existingTx = await Transactions.findOne({ reference });
     if (existingTx) {
       return res.status(400).json({
         success: false,
@@ -368,7 +367,6 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
-    // Verify transaction with Paystack
     const response = await axios.get(
       `https://api.paystack.co/transaction/verify/${reference}`,
       {
@@ -394,6 +392,9 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
+    // Convert amount from kobo to Naira
+    const amountInNaira = transaction.amount / 100;
+
     const plan = transaction.metadata?.plan;
     if (!plan) {
       return res.status(400).json({
@@ -402,7 +403,6 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
-    // Get provider
     const provider = await Provider.findById(providerId);
     if (!provider) {
       return res.status(404).json({
@@ -411,7 +411,6 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
-    // Get or create wallet
     let wallet = await dB.wallets.findOne({ owner: providerId.toString() });
     if (!wallet) {
       wallet = await dB.wallets.create({
@@ -420,7 +419,6 @@ const verifySubscription = catchAsync(async (req, res) => {
       });
     }
 
-    // Check if provider has an agent code
     let agent = null;
     let commissionAmount = 0;
     const agentCode = provider.agentCode || transaction.metadata?.agentCode || req.body.agentCode;
@@ -429,8 +427,7 @@ const verifySubscription = catchAsync(async (req, res) => {
       agent = await Agent.findOne({ agentCode: agentCode.toUpperCase(), isActive: true });
 
       if (agent) {
-        const amountPaid = transaction.amount;
-        commissionAmount = Math.round(amountPaid * 0.06);
+        commissionAmount = Math.round(amountInNaira * 0.06);
 
         try {
           const existingReferral = agent.referrals.find(
@@ -439,7 +436,7 @@ const verifySubscription = catchAsync(async (req, res) => {
 
           if (!existingReferral) {
             await agent.addReferral(providerId.toString(), 'provider', commissionAmount);
-            console.log(`Commission of ₦${commissionAmount} added to agent ${agent.agentCode}`);
+            console.log(`Commission of NGN ${commissionAmount} added to agent ${agent.agentCode}`);
           }
         } catch (referralError) {
           console.error('Error adding referral to agent:', referralError);
@@ -450,10 +447,9 @@ const verifySubscription = catchAsync(async (req, res) => {
     const renewalDate = new Date();
     renewalDate.setDate(renewalDate.getDate() + 365);
 
-    // Update subscription
     provider.subscription = {
       selectedPlan: plan,
-      amountPaid: transaction.amount,
+      amountPaid: amountInNaira,  // Store in Naira
       currency: transaction.currency || 'NGN',
       paidAt: new Date(),
       renewalDate: renewalDate,
@@ -462,17 +458,15 @@ const verifySubscription = catchAsync(async (req, res) => {
 
     await provider.save();
 
-    // Create transaction record - using 'subscription' type
     const balanceBefore = wallet.balance;
-    // Balance doesn't change since payment is direct via Paystack
-    await dB.transactions.create({
+    await Transactions.create({
       wallet: wallet._id,
       owner: providerId.toString(),
       type: 'subscription',
-      amount: transaction.amount,
+      amount: amountInNaira,  // Store in Naira
       balanceBefore: balanceBefore,
       balanceAfter: wallet.balance,
-      description: `Subscription (${plan} plan) - ${transaction.currency || 'NGN'} ${transaction.amount}`,
+      description: `Subscription (${plan} plan) - ${transaction.currency || 'NGN'} ${amountInNaira.toFixed(2)}`,
       reference: reference,
       status: 'success',
       metadata: {
@@ -481,6 +475,8 @@ const verifySubscription = catchAsync(async (req, res) => {
         agentCode: agentCode,
         commission: commissionAmount,
         paymentMethod: 'paystack',
+        amountInKobo: transaction.amount,
+        amountInNaira: amountInNaira,
       },
     });
 

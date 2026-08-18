@@ -3,6 +3,10 @@ const Provider = require('../models/provider');
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const httpStatus = require('http-status');
+const axios = require('axios');
+const notificationService = require('../services/notification.service');
+const Transaction = require('../models/transaction');
+const Wallet = require('../models/wallet');
 
 // Provider plan prices
 const PROVIDER_PLANS = {
@@ -121,6 +125,9 @@ exports.getSubscriptionPlans = catchAsync(async (req, res) => {
 // SUBSCRIBE TO PLAN
 // =============================================
 exports.subscribeToPlan = catchAsync(async (req, res) => {
+  console.log('=== SUBSCRIBE TO PLAN START ===');
+  console.log('req.body:', req.body);
+
   const { planId, reference } = req.body;
   const userId = req.user._id;
 
@@ -144,10 +151,6 @@ exports.subscribeToPlan = catchAsync(async (req, res) => {
       httpStatus.BAD_REQUEST,
       `Invalid plan '${planId}' for ${accountType} account`
     );
-  }
-
-  if (!provider.kycVerified) {
-    throw new ApiError(httpStatus.FORBIDDEN, 'Please complete KYC verification first');
   }
 
   const currentPlan = provider.subscription?.selectedPlan;
@@ -191,7 +194,7 @@ exports.subscribeToPlan = catchAsync(async (req, res) => {
 
     const targetPrice = plans[planId].firstTime;
     const difference = targetPrice - currentPlanPrice;
-    
+
     if (difference <= 0) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
@@ -202,8 +205,124 @@ exports.subscribeToPlan = catchAsync(async (req, res) => {
     upgradeType = 'upgrade';
   }
 
+  // Verify payment with Paystack
+  const secretKey = process.env.PAYSTACK_SECRET_KEY;
+
+  if (!secretKey) {
+    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Paystack secret key not configured');
+  }
+
+  let paymentData;
+  try {
+    console.log('Verifying payment with Paystack...');
+    console.log('Reference:', reference);
+
+    const response = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      {
+        headers: {
+          Authorization: `Bearer ${secretKey}`,
+        },
+        timeout: 30000,
+      }
+    );
+
+    console.log('Paystack response status:', response.status);
+    console.log('Paystack response data status:', response.data?.status);
+
+    if (!response.data) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'No response from Paystack');
+    }
+
+    if (response.data.status === false) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        response.data.message || 'Payment verification failed'
+      );
+    }
+
+    if (!response.data.data) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'No transaction data from Paystack');
+    }
+
+    if (response.data.data.status !== 'success') {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Payment was not successful. Status: ${response.data.data.status}`
+      );
+    }
+
+    const paidAmount = response.data.data.amount / 100;
+    console.log('paidAmount:', paidAmount);
+    console.log('amountToPay:', amountToPay);
+
+    if (paidAmount !== amountToPay) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Payment amount mismatch. Expected: ${amountToPay}, Paid: ${paidAmount}`
+      );
+    }
+
+    paymentData = response.data.data;
+    console.log('Payment verified successfully');
+  } catch (error) {
+    console.error('Paystack error:', error.message);
+    console.error('Paystack error details:', error.response?.data || error.message);
+
+    // Handle 404 - transaction not found
+    if (error.response && error.response.status === 404) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        'Payment reference not found. Please check the reference and try again.'
+      );
+    }
+
+    if (error.response) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Paystack verification failed: ${error.response.data?.message || error.message}`
+      );
+    }
+    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Payment verification service unavailable');
+  }
+
+  // Check if reference already used
+  const existingTransaction = await Transaction.findOne({ reference });
+  if (existingTransaction) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'This payment reference has already been processed');
+  }
+
+  // Get or create wallet
+  const ownerId = userId.toString();
+  let wallet = await Wallet.findOne({ owner: ownerId });
+
+  if (!wallet) {
+    try {
+      wallet = await Wallet.create({
+        owner: ownerId,
+        ownerType: 'provider',
+        balance: 0,
+        escrowBalance: 0,
+        currency: 'NGN',
+        isActive: true,
+      });
+    } catch (createError) {
+      if (createError.code === 11000) {
+        wallet = await Wallet.findOne({ owner: ownerId });
+        if (!wallet) {
+          throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Failed to create or find wallet');
+        }
+      } else {
+        throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, `Wallet creation failed: ${createError.message}`);
+      }
+    }
+  }
+
+  // Activate subscription
   const renewalDate = new Date();
   renewalDate.setFullYear(renewalDate.getFullYear() + 1);
+
+  const balanceBefore = wallet.balance;
 
   provider.subscription = {
     selectedPlan: planId,
@@ -220,6 +339,64 @@ exports.subscribeToPlan = catchAsync(async (req, res) => {
 
   await provider.save();
 
+  // Create transaction record
+  const transaction = await Transaction.create({
+    wallet: wallet._id,
+    owner: ownerId,
+    type: 'subscription',
+    amount: amountToPay,
+    balanceBefore: balanceBefore,
+    balanceAfter: wallet.balance,
+    currency: 'NGN',
+    description: `Subscription (${plans[planId].name} plan) - ${upgradeType}`,
+    reference: reference,
+    status: 'success',
+    metadata: {
+      plan: planId,
+      planName: plans[planId].name,
+      upgradeType: upgradeType,
+      renewalDate: renewalDate,
+      paystackData: paymentData,
+      paymentMethod: 'paystack',
+      amountInKobo: paymentData.amount,
+      amountInNaira: amountToPay,
+    },
+  });
+
+  // Send push notification via notification service
+  try {
+    const planName = plans[planId].name;
+    let notificationTitle = 'Subscription Activated';
+    let notificationBody = `Your ${planName} subscription has been activated successfully.`;
+
+    if (upgradeType === 'upgrade') {
+      notificationTitle = 'Subscription Upgraded';
+      notificationBody = `Your subscription has been upgraded to ${planName}.`;
+    } else if (upgradeType === 'renewal') {
+      notificationTitle = 'Subscription Renewed';
+      notificationBody = `Your ${planName} subscription has been renewed for another year.`;
+    }
+
+    await notificationService.sendPushNotification({
+      userId: userId,
+      actorType: 'provider',
+      title: notificationTitle,
+      body: notificationBody,
+      type: 'payment',
+      data: {
+        type: 'subscription',
+        plan: planId,
+        upgradeType: upgradeType,
+        renewalDate: renewalDate.toISOString(),
+        amountPaid: amountToPay,
+        transactionId: paymentData.id,
+        transactionReference: reference,
+      },
+    });
+  } catch (notificationError) {
+    console.error('Notification error:', notificationError.message);
+  }
+
   res.status(httpStatus.OK).json({
     success: true,
     message: `Subscription ${upgradeType === 'upgrade' ? 'upgraded' : upgradeType === 'renewal' ? 'renewed' : 'activated'} successfully`,
@@ -230,9 +407,19 @@ exports.subscribeToPlan = catchAsync(async (req, res) => {
       isActive: true,
       upgradeType: upgradeType,
       accountType: accountType,
+      transactionId: paymentData.id,
+      paymentReference: reference,
+      transaction: {
+        id: transaction._id,
+        amount: transaction.amount,
+        type: transaction.type,
+        status: transaction.status,
+        reference: transaction.reference,
+      },
     },
   });
 });
+
 
 // =============================================
 // GET SUBSCRIPTION DETAILS

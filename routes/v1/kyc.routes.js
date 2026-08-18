@@ -12,5 +12,4 @@ router.route('/webhook/dojah')
     .all(unAllowedMethod);
 
 
-
 module.exports = router;
