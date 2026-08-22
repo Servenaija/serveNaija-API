@@ -8,12 +8,13 @@ const initializeMembership = {
       'any.required': 'Plan is required',
       'any.only': 'Plan must be either free or premium',
     }),
-    paystackReference: Joi.string().when('plan', {
+    paystackReference: Joi.when('plan', {
       is: 'premium',
       then: Joi.string().required().messages({
         'any.required': 'Paystack reference is required for premium membership',
+        'string.empty': 'Paystack reference cannot be empty',
       }),
-      otherwise: Joi.string().optional(),
+      otherwise: Joi.string().optional().allow('', null),
     }),
   }),
 };
