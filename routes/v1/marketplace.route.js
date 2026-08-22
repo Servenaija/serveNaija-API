@@ -93,6 +93,10 @@ router.route('/reviews/create')
   .post(verifyToken, validate(mpValidation.createReview), mp.createReview)
   .all(unAllowedMethod);
 
+  router.route('/:id/cancel')
+  .put(verifyToken, validate(mpValidation.cancelOrder), mp.cancelOrder)
+  .all(unAllowedMethod);
+
 router.route('/reviews/:targetId')
   .get(mp.getTargetReviews)
   .all(unAllowedMethod);

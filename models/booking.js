@@ -37,6 +37,7 @@ const bookingSchema = new mongoose.Schema(
         longitude: { type: Number, default: null },
       },
     },
+    startCodeExpiresAt: { type: Date, default: null },
 
     additionalNotes: { type: String, trim: true },
 

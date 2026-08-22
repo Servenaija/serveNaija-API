@@ -3,6 +3,7 @@ const bcrypt = require('bcryptjs');
 const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
+const { getBankCodeFromAccount } = require('../utils/paystack');
 
 function sanitize(doc) {
   const obj = doc.toObject ? doc.toObject() : { ...doc };
@@ -34,15 +35,52 @@ const updateMe = catchAsync(async (req, res) => {
 
 // PUT /user/change-password
 const changePassword = catchAsync(async (req, res) => {
-  const { currentPassword, newPassword } = req.body;
+  const { currentPassword, newPassword, confirmPassword } = req.body;
 
+  // Check if all fields are provided
+  if (!currentPassword || !newPassword || !confirmPassword) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'All password fields are required.');
+  }
+
+  // Check if new password matches confirm password
+  if (newPassword !== confirmPassword) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'New password and confirm password do not match.');
+  }
+
+  // Check if new password is at least 8 characters
+  if (newPassword.length < 8) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'New password must be at least 8 characters long.');
+  }
+
+  // Find user with password field
   const user = await dB.customers.findById(req.user._id).select('+password');
-  const isMatch = await bcrypt.compare(currentPassword, user.password);
-  if (!isMatch) throw new ApiError(httpStatus.BAD_REQUEST, 'Current password is incorrect.');
+  if (!user) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'User not found.');
+  }
 
-  user.password = bcrypt.hashSync(newPassword, 12);
+  // Verify current password
+  const isMatch = await bcrypt.compare(currentPassword, user.password);
+  if (!isMatch) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Current password is incorrect.');
+  }
+
+  // Check if new password is same as current password
+  const isSameAsCurrent = await bcrypt.compare(newPassword, user.password);
+  if (isSameAsCurrent) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'New password cannot be the same as current password.');
+  }
+
+  // Hash and save new password
+  user.password = await bcrypt.hash(newPassword, 12);
   await user.save();
-  res.json({ message: 'Password updated successfully.' });
+
+  // Optional: Clear all sessions/tokens or send notification
+  // You might want to invalidate all existing tokens here
+
+  res.json({ 
+    success: true,
+    message: 'Password updated successfully.' 
+  });
 });
 
 // PUT /user/expo-token

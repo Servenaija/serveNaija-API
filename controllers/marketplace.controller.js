@@ -7,7 +7,7 @@ const { getIo } = require('../utils/io');
 const { uploadObject } = require('../utils/aws.s3.bucket');
 const Customer = require('../models/customer');
 const Provider = require('../models/provider');
-
+const mongoose = require('mongoose');
 
 // ─────────────────────────────────────────
 // STORES
@@ -351,14 +351,18 @@ const createOrder = catchAsync(async (req, res) => {
     if (!storeId) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Store ID is required');
     }
-    
+
     if (!items || !Array.isArray(items) || items.length === 0) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'At least one item is required');
     }
-    
+
     if (!deliveryAddress || !deliveryAddress.street || !deliveryAddress.city || !deliveryAddress.state) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Complete delivery address is required');
     }
+
+    // Initialize orderIdShort early
+    const tempOrderId = `ORD-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+    const orderIdShort = tempOrderId.slice(-6);
 
     console.log('Step 1: Finding store...');
     const store = await dB.stores.findById(storeId);
@@ -372,15 +376,15 @@ const createOrder = catchAsync(async (req, res) => {
     console.log('Step 2: Finding products...');
     const productIds = items.map((i) => i.productId);
     console.log('Product IDs:', productIds);
-    
+
     const products = await dB.products.find({ _id: { $in: productIds }, isActive: true });
     console.log('Products found:', products.length);
-    
+
     if (products.length !== items.length) {
       console.log('Product count mismatch. Expected:', items.length, 'Found:', products.length);
       throw new ApiError(httpStatus.BAD_REQUEST, 'One or more products not found or inactive.');
     }
-    
+
     const productMap = Object.fromEntries(products.map((p) => [p._id.toString(), p]));
 
     console.log('Step 3: Building order items...');
@@ -415,14 +419,79 @@ const createOrder = catchAsync(async (req, res) => {
 
     // Map payment method to valid enum values
     let validPaymentMethod = 'card';
+    let paymentStatus = 'paid';
+    let wallet = null;
+    let transaction = null;
+
     if (paymentMethod === 'online' || paymentMethod === 'card') {
       validPaymentMethod = 'card';
+      paymentStatus = 'paid';
     } else if (paymentMethod === 'bank_transfer' || paymentMethod === 'transfer') {
       validPaymentMethod = 'bank_transfer';
+      paymentStatus = 'pending';
     } else if (paymentMethod === 'cod' || paymentMethod === 'cash') {
       validPaymentMethod = 'cod';
+      paymentStatus = 'pending';
     } else if (paymentMethod === 'wallet') {
       validPaymentMethod = 'wallet';
+      paymentStatus = 'paid';
+
+      // ============================================
+      // WALLET PAYMENT PROCESSING
+      // ============================================
+      console.log('Step 3.5: Processing wallet payment...');
+
+      // Get customer's wallet
+      wallet = await dB.wallets.findOne({
+        owner: req.user._id.toString(),
+        ownerType: 'customer',
+        isActive: true
+      });
+
+      if (!wallet) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Wallet not found. Please create a wallet first.');
+      }
+
+      // Check if balance is sufficient
+      if (wallet.balance < total) {
+        throw new ApiError(httpStatus.BAD_REQUEST,
+          `Insufficient wallet balance. Available: ₦${wallet.balance.toLocaleString()}, Required: ₦${total.toLocaleString()}`
+        );
+      }
+
+      // Store balance before deduction
+      const balanceBefore = wallet.balance;
+
+      // Deduct from wallet
+      wallet.balance -= total;
+      wallet.totalSpent = (wallet.totalSpent || 0) + total;
+      await wallet.save();
+      
+      const balanceAfter = wallet.balance;
+      console.log('Wallet balance updated:', balanceBefore, '->', balanceAfter);
+
+      // Create wallet transaction record
+      transaction = await dB.transactions.create({
+        wallet: wallet._id,
+        owner: req.user._id.toString(),
+        type: 'debit',
+        amount: total,
+        balanceBefore: balanceBefore,
+        balanceAfter: balanceAfter,
+        currency: 'NGN',
+        description: `Payment for order #${orderIdShort}`,
+        reference: `WALLET_ORDER_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+        status: 'success',
+        metadata: {
+          orderId: 'pending',
+          paymentMethod: 'wallet',
+          orderIdShort: orderIdShort,
+          items: resolvedItems.length,
+          storeId: storeId,
+        },
+        order: null,
+      });
+      console.log('Wallet transaction created:', transaction._id);
     }
     console.log('Payment method:', validPaymentMethod);
 
@@ -433,6 +502,7 @@ const createOrder = catchAsync(async (req, res) => {
       items: resolvedItems,
       subtotal: subtotal,
       deliveryFee: deliveryFee,
+      serviceFee: serviceFee,
       total: total,
       deliveryAddress: {
         street: deliveryAddress.street,
@@ -443,11 +513,26 @@ const createOrder = catchAsync(async (req, res) => {
       },
       paymentMethod: validPaymentMethod,
       paystackReference: paystackReference || null,
-      paymentStatus: 'paid',
-      status: 'confirmed',
+      paymentStatus: paymentStatus,
+      status: paymentStatus === 'paid' ? 'confirmed' : 'pending',
       estimatedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
     });
     console.log('Order created:', order._id);
+
+    // If wallet payment, update the transaction with order ID
+    if (validPaymentMethod === 'wallet' && wallet && transaction) {
+      await dB.transactions.findByIdAndUpdate(
+        transaction._id,
+        {
+          $set: {
+            'metadata.orderId': order._id.toString(),
+            description: `Payment for order #${order._id.toString().slice(-6)}`,
+            order: order._id,
+          }
+        }
+      );
+      console.log('Transaction updated with order ID:', order._id);
+    }
 
     // Decrement stock
     console.log('Step 5: Updating stock...');
@@ -464,22 +549,24 @@ const createOrder = catchAsync(async (req, res) => {
     console.log('Step 6: Sending notifications...');
 
     // Get buyer details
+    const Customer = req.user.constructor;
     const buyer = await Customer.findById(req.user._id).select('fullName email');
     const buyerName = buyer?.fullName || 'Customer';
-    const orderIdShort = order._id.toString().slice(-6);
 
     // 1. Send notification to BUYER
     try {
+      const paymentMethodDisplay = validPaymentMethod === 'wallet' ? 'Wallet' : 'Card';
       await notificationService.sendPushNotification({
         userId: req.user._id.toString(),
         actorType: 'customer',
         title: 'Order Confirmed',
-        body: `Your order #${orderIdShort} has been confirmed. Estimated delivery: 3-5 business days.`,
+        body: `Your order #${orderIdShort} has been confirmed. Payment: ${paymentMethodDisplay}. Estimated delivery: 3-5 business days.`,
         type: 'system',
-        data: { 
-          orderId: order._id.toString(), 
+        data: {
+          orderId: order._id.toString(),
           screen: 'order-details',
           amount: total,
+          paymentMethod: validPaymentMethod,
         },
       });
       console.log('Buyer notification sent');
@@ -489,6 +576,7 @@ const createOrder = catchAsync(async (req, res) => {
 
     // 2. Send notification to SELLER
     try {
+      const Provider = require('../models/Provider');
       const provider = await Provider.findById(store.provider).select('fullName email');
       const sellerUserId = store.provider.toString();
 
@@ -496,14 +584,15 @@ const createOrder = catchAsync(async (req, res) => {
         userId: sellerUserId,
         actorType: 'provider',
         title: 'New Order Received',
-        body: `You have a new order from ${buyerName}. Order #${orderIdShort} - ₦${total.toLocaleString()}`,
+        body: `You have a new order from ${buyerName}. Order #${orderIdShort} - ₦${total.toLocaleString()} (${validPaymentMethod})`,
         type: 'system',
-        data: { 
-          orderId: order._id.toString(), 
+        data: {
+          orderId: order._id.toString(),
           screen: 'store-orders',
           buyerName: buyerName,
           total: total,
           items: resolvedItems.length,
+          paymentMethod: validPaymentMethod,
         },
       });
       console.log('Seller notification sent');
@@ -521,9 +610,10 @@ const createOrder = catchAsync(async (req, res) => {
           total: total,
           items: resolvedItems.length,
           createdAt: order.createdAt,
+          paymentMethod: validPaymentMethod,
           order: order,
         });
-        
+
         io.to('admin_room').emit('new_order', {
           orderId: order._id.toString(),
           store: store.name,
@@ -531,17 +621,20 @@ const createOrder = catchAsync(async (req, res) => {
           buyerName: buyerName,
           total: total,
           items: resolvedItems.length,
+          paymentMethod: validPaymentMethod,
         });
-        
+
         console.log('Socket events emitted');
       }
     } catch (error) {
       console.error('Error emitting socket events:', error.message);
     }
 
-    res.status(httpStatus.CREATED).json({ 
-      success: true, 
-      order 
+    res.status(httpStatus.CREATED).json({
+      success: true,
+      order,
+      paymentMethod: validPaymentMethod,
+      walletPayment: validPaymentMethod === 'wallet',
     });
 
   } catch (error) {
@@ -550,6 +643,27 @@ const createOrder = catchAsync(async (req, res) => {
     throw error;
   }
 });
+
+// Helper function to send email receipt (optional)
+async function sendEmailReceipt({ email, name, orderId, items, total, paymentMethod, orderDate }) {
+  // Implement email sending logic using your preferred service (SendGrid, Nodemailer, etc.)
+  console.log(`Email receipt would be sent to ${email} for order ${orderId}`);
+  // Example with SendGrid:
+  // const msg = {
+  //   to: email,
+  //   from: 'orders@servenaija.com',
+  //   subject: `Order Receipt #${orderId.slice(-6)}`,
+  //   html: `
+  //     <h2>Thank you for your order, ${name}!</h2>
+  //     <p>Order #${orderId.slice(-6)}</p>
+  //     <p>Payment Method: ${paymentMethod}</p>
+  //     <p>Total: ₦${total.toLocaleString()}</p>
+  //     <p>Order Date: ${new Date(orderDate).toLocaleDateString()}</p>
+  //   `,
+  // };
+  // await sendGrid.send(msg);
+  return true;
+}
 
 const getOrder = catchAsync(async (req, res) => {
   const order = await dB.orders.findById(req.params.orderId).populate('store', 'name logo');
@@ -687,9 +801,131 @@ const getTargetReviews = catchAsync(async (req, res) => {
   });
 });
 
+const cancelOrder = catchAsync(async (req, res) => {
+  const { reason } = req.body;
+  const order = await dB.orders.findOne({ _id: req.params.id, buyer: req.user._id });
+
+  if (!order) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Order not found.');
+  }
+
+  // Check if order can be cancelled
+  const cancellableStatuses = ['pending', 'confirmed', 'processing'];
+  if (!cancellableStatuses.includes(order.status)) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      `Order cannot be cancelled at its current stage: ${order.status}`
+    );
+  }
+
+  // Store payment info before updating
+  const paymentStatus = order.paymentStatus;
+  const totalAmount = order.total || 0;
+
+  console.log('Order Cancel Debug:');
+  console.log('Order ID:', order._id);
+  console.log('Order Status:', order.status);
+  console.log('Payment Status:', paymentStatus);
+  console.log('Payment Method:', order.paymentMethod);
+  console.log('Total Amount:', totalAmount);
+
+  // Update order status
+  order.status = 'cancelled';
+  order.cancellationReason = reason || '';
+  await order.save();
+
+  // Refund customer if payment was made
+  let refundAmount = 0;
+
+  // Check all possible paid statuses
+  if (paymentStatus === 'paid' || paymentStatus === 'held' || paymentStatus === 'pending') {
+    try {
+      const Customer = mongoose.model('Customer');
+      const customer = await Customer.findById(req.user._id);
+
+      if (customer) {
+        refundAmount = totalAmount;
+
+        console.log(`Attempting refund of ₦${refundAmount} to customer ${customer.email}`);
+
+        const result = await customer.updateWalletBalance(
+          refundAmount,
+          'credit',
+          `Refund for cancelled order ${order._id.toString()}`,
+          `REFUND_ORDER_${order._id.toString()}_${Date.now()}`,
+          {
+            orderId: order._id.toString(),
+            refundAmount: refundAmount,
+            reason: reason || 'Order cancelled by customer',
+            paymentStatus: paymentStatus,
+          }
+        );
+
+        // Update order payment status to refunded
+        order.paymentStatus = 'refunded';
+        await order.save();
+
+        console.log(`Refunded ₦${refundAmount} to customer ${customer.email} for cancelled order ${order._id.toString()}`);
+        console.log(`New wallet balance: ₦${result.wallet.balance}`);
+      }
+    } catch (refundError) {
+      console.error('Refund failed:', refundError);
+    }
+  } else {
+    console.log(`No refund processed. Payment status: ${paymentStatus}`);
+  }
+
+  // Send notification to store owner
+  const store = await dB.stores.findById(order.store);
+  if (store) {
+    notificationService.sendPushNotification({
+      userId: store.provider.toString(),
+      actorType: 'provider',
+      title: 'Order Cancelled',
+      body: `A customer has cancelled their order. ${refundAmount > 0 ? `₦${refundAmount.toLocaleString()} has been refunded.` : ''}`,
+      type: 'order',
+      data: {
+        orderId: order._id.toString(),
+        refunded: refundAmount > 0,
+        refundAmount: refundAmount,
+      },
+    }).catch(() => { });
+  }
+
+  // Send refund notification to customer
+  if (refundAmount > 0) {
+    notificationService.sendPushNotification({
+      userId: req.user._id.toString(),
+      actorType: 'customer',
+      title: 'Refund Processed',
+      body: `₦${refundAmount.toLocaleString()} has been refunded to your wallet for cancelled order.`,
+      type: 'payment',
+      data: {
+        orderId: order._id.toString(),
+        refundAmount: refundAmount,
+      },
+    }).catch(() => { });
+  }
+
+  // Populate for response
+  const populatedOrder = await dB.orders
+    .findById(order._id)
+    .populate('buyer', 'fullName email phoneNumber profilePhoto')
+    .populate('store', 'name logo');
+
+  res.json({
+    success: true,
+    message: 'Order cancelled successfully.',
+    order: populatedOrder,
+    refunded: refundAmount > 0,
+    refundAmount: refundAmount,
+    paymentStatus: paymentStatus,
+  });
+});
+
 module.exports = {
   createStore, getMyStore, updateStore, getStoreStats, listStores, getStore,
   createProduct, getProduct, updateProduct, deleteProduct, getStoreProducts, searchProducts, getFeaturedProducts, getTrendingProducts,
   createOrder, getOrder, updateOrderStatus, getMyOrdersAsBuyer, getMyOrdersAsSeller,
-  createReview, getTargetReviews,
+  createReview, getTargetReviews, cancelOrder
 };

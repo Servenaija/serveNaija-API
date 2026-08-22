@@ -90,6 +90,8 @@ const updateServiceInfo = catchAsync(async (req, res) => {
 
 // Step 4: Location Information
 const updateLocation = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+
   const {
     state,
     city,
@@ -98,53 +100,246 @@ const updateLocation = catchAsync(async (req, res) => {
     latitude,
     longitude,
     radius,
-    travelOutsideArea
+    travelOutsideArea,
   } = req.body;
 
-  // Validate coordinates if provided
-  if (latitude && longitude) {
-    if (latitude < -90 || latitude > 90) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid latitude');
-    }
-    if (longitude < -180 || longitude > 180) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid longitude');
-    }
+  // =====================================================
+  // REQUIRED FIELDS
+  // =====================================================
+
+  if (!state || !state.trim()) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'State is required'
+    );
   }
+
+  if (!city || !city.trim()) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'City is required'
+    );
+  }
+
+  if (!address || !address.trim()) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Address is required'
+    );
+  }
+
+  // =====================================================
+  // COORDINATES
+  // =====================================================
+
+  const hasLatitude =
+    latitude !== undefined &&
+    latitude !== null &&
+    Number.isFinite(
+      Number(latitude)
+    );
+
+  const hasLongitude =
+    longitude !== undefined &&
+    longitude !== null &&
+    Number.isFinite(
+      Number(longitude)
+    );
+
+  if (
+    hasLatitude !==
+    hasLongitude
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Latitude and longitude must be provided together'
+    );
+  }
+
+  const parsedLatitude =
+    hasLatitude
+      ? Number(latitude)
+      : null;
+
+  const parsedLongitude =
+    hasLongitude
+      ? Number(longitude)
+      : null;
+
+  if (
+    hasLatitude &&
+    (
+      parsedLatitude < -90 ||
+      parsedLatitude > 90
+    )
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Invalid latitude'
+    );
+  }
+
+  if (
+    hasLongitude &&
+    (
+      parsedLongitude < -180 ||
+      parsedLongitude > 180
+    )
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Invalid longitude'
+    );
+  }
+
+  // =====================================================
+  // UPDATE DATA
+  // =====================================================
 
   const updateData = {
-    'location.state': state || '',
-    'location.city': city || '',
-    'location.area': area || '',
-    'location.address': address || '',
-    'location.radius': radius || '10KM',
-    'location.travelOutsideArea': travelOutsideArea !== undefined ? travelOutsideArea : true,
-    'location.coordinates.latitude': latitude || null,
-    'location.coordinates.longitude': longitude || null
+    'location.state':
+      state.trim(),
+
+    'location.city':
+      city.trim(),
+
+    'location.address':
+      address.trim(),
+
+    'location.area':
+      area?.trim() || '',
+
+    'location.radius':
+      radius || '10KM',
+
+    'location.travelOutsideArea':
+      travelOutsideArea !== undefined
+        ? travelOutsideArea
+        : true,
   };
 
-  // Update GeoJSON for 2dsphere queries
-  if (latitude && longitude) {
-    updateData.geoLocation = {
-      type: 'Point',
-      coordinates: [longitude, latitude]
-    };
-  } else {
-    updateData.geoLocation = undefined;
+  // =====================================================
+  // COORDINATES + GEOLOCATION
+  // =====================================================
+
+  if (
+    hasLatitude &&
+    hasLongitude
+  ) {
+    updateData[
+      'location.coordinates.latitude'
+    ] =
+      parsedLatitude;
+
+    updateData[
+      'location.coordinates.longitude'
+    ] =
+      parsedLongitude;
+
+    updateData[
+      'geoLocation.type'
+    ] =
+      'Point';
+
+    updateData[
+      'geoLocation.coordinates'
+    ] = [
+      parsedLongitude,
+      parsedLatitude,
+    ];
   }
 
-  const provider = await Provider.findByIdAndUpdate(
-    req.user._id,
-    updateData,
-    { new: true, runValidators: true }
+  console.log(
+    'PROVIDER LOCATION UPDATE:',
+    JSON.stringify(
+      updateData,
+      null,
+      2
+    )
   );
 
-  res.json({
+  // =====================================================
+  // SAVE
+  // =====================================================
+
+  const provider =
+    await Provider.findByIdAndUpdate(
+      userId,
+      {
+        $set:
+          updateData,
+      },
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
+
+  if (!provider) {
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      'Provider not found'
+    );
+  }
+
+  console.log(
+    'PROVIDER LOCATION SAVED:',
+    JSON.stringify(
+      {
+        location:
+          provider.location,
+
+        geoLocation:
+          provider.geoLocation,
+      },
+      null,
+      2
+    )
+  );
+
+  // =====================================================
+  // RESPONSE
+  // =====================================================
+
+  res.status(
+    httpStatus.OK
+  ).json({
     success: true,
-    message: 'Location information updated successfully',
+
+    message:
+      'Location information updated successfully',
+
     data: {
-      location: provider.location,
-      geoLocation: provider.geoLocation
-    }
+      state:
+        provider.location.state,
+
+      city:
+        provider.location.city,
+
+      area:
+        provider.location.area,
+
+      address:
+        provider.location.address,
+
+      radius:
+        provider.location.radius,
+
+      travelOutsideArea:
+        provider.location.travelOutsideArea,
+
+      latitude:
+        provider.location.coordinates?.latitude,
+
+      longitude:
+        provider.location.coordinates?.longitude,
+
+      coordinates:
+        provider.location.coordinates,
+
+      geoLocation:
+        provider.geoLocation,
+    },
   });
 });
 
@@ -347,6 +542,7 @@ const getKYCStatus = catchAsync(async (req, res) => {
     }
   });
 });
+
 const verifySubscription = catchAsync(async (req, res) => {
   try {
     const { reference } = req.body;

@@ -47,6 +47,8 @@ router.route('/forgot-password')
     .post(allowedMethod, validate(authValidation.forgotPassword), authController.forgotPassword)
     .all(unAllowedMethod)
 
-
+router.route('/send-magic-link')
+    .post(allowedMethod,  authController.sendMagicLink)
+    .all(unAllowedMethod)
 
 module.exports = router;

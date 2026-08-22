@@ -30,6 +30,7 @@ module.exports = {
     { name: 'document', maxCount: 1 },
     { name: 'beforePhotos', maxCount: 5 },
     { name: 'afterPhotos', maxCount: 5 },
+     { name: 'evidencePhotos', maxCount: 10 }
   ]),
   
   // Completion photos upload (specific for jobs)
@@ -40,4 +41,6 @@ module.exports = {
   
   // Any files upload
   uploadAny: upload.any(),
+    uploadAdditionalPayment: upload.array('evidencePhotos', 10),
+
 };

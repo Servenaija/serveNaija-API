@@ -70,6 +70,16 @@ const providerSchema = new mongoose.Schema(
       },
     },
     location: {
+      coordinates: {
+        latitude: {
+          type: Number,
+          default: ''
+        },
+        longitude: {
+          type: Number,
+          default: ''
+        },
+      },
       state: {
         type: String,
         trim: true,
@@ -99,16 +109,17 @@ const providerSchema = new mongoose.Schema(
         type: Boolean,
         default: true,
       },
-       latitude: {
-          type: Number,
-          default: null,
-        },
-        longitude: {
-          type: Number,
-          default: null,
-        },
-      }, coordinates: {
-      
+      latitude: {
+        type: Number,
+        default: null,
+      },
+      longitude: {
+        type: Number,
+        default: null,
+      },
+    },
+    coordinates: {
+
     },
     profile: {
       photo: {
@@ -297,9 +308,9 @@ providerSchema.index({ email: 1, kycStatus: 1 }); // Fixed: was kycVerified
 providerSchema.index({ geoLocation: '2dsphere' });
 
 // Additional index for location coordinates fallback queries
-providerSchema.index({ 
-  'location.coordinates.latitude': 1, 
-  'location.coordinates.longitude': 1 
+providerSchema.index({
+  'location.coordinates.latitude': 1,
+  'location.coordinates.longitude': 1
 });
 
 // ============================================
@@ -307,22 +318,22 @@ providerSchema.index({
 // ============================================
 
 // For finding active providers by category with location
-providerSchema.index({ 
-  'service.category': 1, 
+providerSchema.index({
+  'service.category': 1,
   'subscription.isActive': 1,
   isBanned: 1,
   isDeactivated: 1,
 });
 
 // For finding verified providers
-providerSchema.index({ 
-  isVerifiedPro: 1, 
+providerSchema.index({
+  isVerifiedPro: 1,
   'subscription.isActive': 1,
   avgRating: -1, // If you add avgRating field
 });
 
 // For featured providers
-providerSchema.index({ 
+providerSchema.index({
   featuredUntil: 1,
   'subscription.isActive': 1,
 });

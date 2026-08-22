@@ -26,6 +26,7 @@ const kyc = require('./kyc');
 const category = require('./category');
 const promotion = require('./promotion');
 const SupportTicket = require('./SupportTicket');
+const calls = require('./call');
 
 
 mongoose.set('strictQuery', false);
@@ -82,5 +83,6 @@ dB.SupportTickets = SupportTicket;
 module.exports = {
   dB,
   supportTickets: SupportTicket,
+  calls
 
 };

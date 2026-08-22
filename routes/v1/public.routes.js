@@ -22,4 +22,15 @@ router.route('/near-me')
   .get(publicController.getNearMeProviders)
   .all(unAllowedMethod);
 
+router.route('/near-me/business')
+  .get(publicController.getNearMeBusinesses)
+  .all(unAllowedMethod);
+
+router.route('/providers/:providerId/completed-jobs')
+  .get(
+    publicController.getProviderCompletedJobs
+  )
+  .all(unAllowedMethod)
+
+
 module.exports = router;

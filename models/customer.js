@@ -1,4 +1,5 @@
 // models/customerModel.js
+
 const mongoose = require('mongoose');
 
 const customerSchema = new mongoose.Schema(
@@ -51,6 +52,44 @@ const customerSchema = new mongoose.Schema(
 			trim: true,
 			default: null,
 		},
+		membership: {
+			type: {
+				plan: {
+					type: String,
+					enum: ['free', 'premium'],
+					default: 'free',
+				},
+				amountPaid: {
+					type: Number,
+					default: 0,
+				},
+				paidAt: {
+					type: Date,
+					default: null,
+				},
+				expiresAt: {
+					type: Date,
+					default: null,
+				},
+				isActive: {
+					type: Boolean,
+					default: true,
+				},
+				paystackReference: {
+					type: String,
+					trim: true,
+					default: null,
+				},
+			},
+			default: {
+				plan: 'free',
+				amountPaid: 0,
+				paidAt: null,
+				expiresAt: null,
+				isActive: true,
+				paystackReference: null,
+			},
+		},
 		location: {
 			state: {
 				type: String,
@@ -83,7 +122,6 @@ const customerSchema = new mongoose.Schema(
 				},
 			},
 		},
-		// Wallet reference
 		walletId: {
 			type: mongoose.Schema.Types.ObjectId,
 			ref: 'Wallet',
@@ -128,12 +166,18 @@ const customerSchema = new mongoose.Schema(
 	}
 );
 
+// Basic indexes
 customerSchema.index({ createdAt: -1 });
 customerSchema.index({ isBanned: 1, createdAt: -1 });
 customerSchema.index({ isEmailVerified: 1, createdAt: -1 });
 customerSchema.index({ 'location.state': 1, 'location.city': 1 });
 customerSchema.index({ agentCode: 1 }, { sparse: true });
 customerSchema.index({ walletId: 1 }, { sparse: true });
+
+//  Membership indexes
+customerSchema.index({ 'membership.plan': 1 });
+customerSchema.index({ 'membership.expiresAt': 1 });
+customerSchema.index({ 'membership.isActive': 1 });
 
 // Virtual to get wallet data when populated
 customerSchema.virtual('wallet', {
@@ -148,7 +192,6 @@ customerSchema.pre('save', async function(next) {
 	if (this.isNew) {
 		const Wallet = mongoose.model('Wallet');
 		
-		// Check if wallet already exists
 		const existingWallet = await Wallet.findOne({ owner: this._id.toString() });
 		if (!existingWallet) {
 			const wallet = await Wallet.create({
@@ -175,7 +218,6 @@ customerSchema.methods.getWallet = async function() {
 		if (wallet) return wallet;
 	}
 	
-	// If wallet doesn't exist, create it
 	const wallet = await Wallet.create({
 		owner: this._id.toString(),
 		ownerType: 'customer',

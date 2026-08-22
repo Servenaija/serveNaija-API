@@ -1,48 +1,53 @@
 const express = require('express');
-const authRoute        = require('./auth.route');
-const adminRoute       = require('./admin.route');
-const userRoute        = require('./user.route');
-const providerRoute    = require('./provider.route');
-const bookingRoute     = require('./booking.route');
+const authRoute = require('./auth.route');
+const adminRoute = require('./admin.route');
+const userRoute = require('./user.route');
+const providerRoute = require('./provider.route');
+const bookingRoute = require('./booking.route');
 const notificationRoute = require('./notification.route');
-const chatRoute        = require('./chat.route');
-const callRoute        = require('./call.route');
-const walletRoute      = require('./wallet.route');
+const chatRoute = require('./chat.route');
+const callRoute = require('./call.route');
+const walletRoute = require('./wallet.route');
 const marketplaceRoute = require('./marketplace.route');
-const agentRoute       = require('./agent.route');
-const httpStatus       = require('http-status');
-const cache            = require('../../utils/cache');
-const providerOnboardingRoute = require ('./providerOnboarding.routes');
-const kycRoute = require( './kyc.routes');
+const agentRoute = require('./agent.route');
+const httpStatus = require('http-status');
+const cache = require('../../utils/cache');
+const providerOnboardingRoute = require('./providerOnboarding.routes');
+const kycRoute = require('./kyc.routes');
 const promoteRoute = require('./promote.route');
 const supportRoutes = require('./support.routes');
 const subscriptionRoute = require('./subcription.route');
 const businessOnboardingRoute = require('./businessOnboarding.routes');
 const publicRoutes = require('./public.routes');
 const customerRoute = require('./customer.route');
+const streamRoute = require('./stream.route');
+const reviewRoute = require('./review.routes');
+
 
 const router = express.Router();
 
 const defaultRoutes = [
-  { path: '/auth',          route: authRoute },
-  { path: '/promote',       route: promoteRoute },
-  { path: '/customer',      route: customerRoute },
-  { path: '/public',        route: publicRoutes },
+  { path: '/auth', route: authRoute },
+  { path: '/promote', route: promoteRoute },
+  { path: '/review', route: reviewRoute },
+  { path: '/customer', route: customerRoute },
+  { path: '/stream', route: streamRoute },
+  { path: '/public', route: publicRoutes },
   { path: '/business-onboarding', route: businessOnboardingRoute },
   { path: '/subscriptions', route: subscriptionRoute },
-  { path: '/admins',        route: adminRoute },
-  { path: '/kyc',           route: kycRoute},
-  { path: '/user',          route: userRoute },
-  { path: '/onboardingprovider',  route: providerOnboardingRoute},
-  { path: '/provider',      route: providerRoute },
-  { path: '/bookings',      route: bookingRoute },
+  { path: '/admins', route: adminRoute },
+  { path: '/kyc', route: kycRoute },
+  { path: '/user', route: userRoute },
+  { path: '/onboardingprovider', route: providerOnboardingRoute },
+  { path: '/provider', route: providerRoute },
+  { path: '/bookings', route: bookingRoute },
   { path: '/notifications', route: notificationRoute },
-  { path: '/chat',          route: chatRoute },
-  { path: '/calls',         route: callRoute },
-  { path: '/support',       route: supportRoutes },
-  { path: '/wallet',        route: walletRoute },
-  { path: '/marketplace',   route: marketplaceRoute },
-  { path: '/agent',         route: agentRoute },
+  { path: '/chat', route: chatRoute },
+  { path: '/calls', route: callRoute },
+  { path: '/support', route: supportRoutes },
+  { path: '/wallet', route: walletRoute },
+  { path: '/marketplace', route: marketplaceRoute },
+  { path: '/agent', route: agentRoute },
 ];
 
 defaultRoutes.forEach((route) => {
@@ -50,7 +55,7 @@ defaultRoutes.forEach((route) => {
 });
 
 /* Health check */
-router.get('/', cache.route(), function(req, res) {
+router.get('/', cache.route(), function (req, res) {
   res.status(httpStatus.OK).json({ deployed: true, version: '1.0' });
 });
 

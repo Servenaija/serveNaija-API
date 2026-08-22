@@ -40,8 +40,6 @@ const getNearMeProviders = catchAsync(async (req, res) => {
     isBanned: false,
     isDeactivated: false,
     isDeleted: false,
-    'location.coordinates.latitude': { $ne: null, $exists: true },
-    'location.coordinates.longitude': { $ne: null, $exists: true },
   };
 
   if (category && category.trim()) {
@@ -70,12 +68,21 @@ const getNearMeProviders = catchAsync(async (req, res) => {
     };
   });
 
-  // REMOVE the 50km filter - just sort by distance
-  const filtered = providersWithDistance
-    .filter(p => p.distance !== null)
-    .sort((a, b) => a.distance - b.distance);
+  // Sort: providers with coordinates first (by distance), then without coordinates
+  providersWithDistance.sort((a, b) => {
+    // If both have coordinates, sort by distance
+    if (a.distance !== null && b.distance !== null) {
+      return a.distance - b.distance;
+    }
+    // If only a has coordinates, a comes first
+    if (a.distance !== null) return -1;
+    // If only b has coordinates, b comes first
+    if (b.distance !== null) return 1;
+    // If neither has coordinates, sort by name
+    return (a.fullName || a.email || '').localeCompare(b.fullName || b.email || '');
+  });
 
-  const paginated = filtered.slice(safePage * safeLimit, (safePage + 1) * safeLimit);
+  const paginated = providersWithDistance.slice(safePage * safeLimit, (safePage + 1) * safeLimit);
 
   res.json({
     success: true,
@@ -84,8 +91,8 @@ const getNearMeProviders = catchAsync(async (req, res) => {
       pagination: {
         page: safePage,
         limit: safeLimit,
-        total: filtered.length,
-        pages: Math.ceil(filtered.length / safeLimit),
+        total: providersWithDistance.length,
+        pages: Math.ceil(providersWithDistance.length / safeLimit),
       },
     },
   });
@@ -111,8 +118,6 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
     isBanned: false,
     isDeactivated: false,
     isDeleted: false,
-    'location.coordinates.latitude': { $ne: null, $exists: true },
-    'location.coordinates.longitude': { $ne: null, $exists: true },
   };
 
   if (category && category.trim()) {
@@ -142,11 +147,17 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
     };
   });
 
-  const filtered = businessesWithDistance
-    .filter(p => p.distance !== null && p.distance <= 50)
-    .sort((a, b) => a.distance - b.distance);
+  // Sort: businesses with coordinates first (by distance), then without coordinates
+  businessesWithDistance.sort((a, b) => {
+    if (a.distance !== null && b.distance !== null) {
+      return a.distance - b.distance;
+    }
+    if (a.distance !== null) return -1;
+    if (b.distance !== null) return 1;
+    return (a.businessName || a.fullName || a.email || '').localeCompare(b.businessName || b.fullName || b.email || '');
+  });
 
-  const paginated = filtered.slice(safePage * safeLimit, (safePage + 1) * safeLimit);
+  const paginated = businessesWithDistance.slice(safePage * safeLimit, (safePage + 1) * safeLimit);
 
   res.json({
     success: true,
@@ -155,8 +166,8 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
       pagination: {
         page: safePage,
         limit: safeLimit,
-        total: filtered.length,
-        pages: Math.ceil(filtered.length / safeLimit),
+        total: businessesWithDistance.length,
+        pages: Math.ceil(businessesWithDistance.length / safeLimit),
       },
     },
   });
@@ -248,18 +259,13 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
     isDeleted: false,
   };
 
-  // Only filter by location if coordinates are provided
-  if (latitude && longitude) {
-    matchConditions['location.coordinates.latitude'] = { $ne: null, $exists: true };
-    matchConditions['location.coordinates.longitude'] = { $ne: null, $exists: true };
-  }
-
+  // Get ALL providers in this category (don't filter out those without coordinates)
   let providers = await dB.providers
     .find(matchConditions)
     .select('_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro')
     .lean();
 
-  // Calculate distance if coordinates provided
+  // If coordinates provided, calculate distance and sort
   if (latitude && longitude) {
     const lat = parseFloat(latitude);
     const lng = parseFloat(longitude);
@@ -276,16 +282,23 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
       return { ...provider, distance };
     });
     
-    // Sort by distance (closest first)
+    // Sort: providers with coordinates first (sorted by distance), then without coordinates
     providers.sort((a, b) => {
-      if (a.distance === null) return 1;
-      if (b.distance === null) return -1;
-      return a.distance - b.distance;
+      // If both have coordinates, sort by distance
+      if (a.distance !== null && b.distance !== null) {
+        return a.distance - b.distance;
+      }
+      // If only a has coordinates, a comes first
+      if (a.distance !== null) return -1;
+      // If only b has coordinates, b comes first
+      if (b.distance !== null) return 1;
+      // If neither has coordinates, sort by name
+      return (a.fullName || a.email || '').localeCompare(b.fullName || b.email || '');
     });
   }
 
   // Get total count
-  const countResult = await dB.providers.countDocuments(matchConditions);
+  const total = providers.length;
 
   // Paginate
   const paginated = providers.slice(safePage * safeLimit, (safePage + 1) * safeLimit);
@@ -308,13 +321,61 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
       pagination: {
         page: safePage,
         limit: safeLimit,
-        total: countResult,
-        pages: Math.ceil(countResult / safeLimit),
+        total: total,
+        pages: Math.ceil(total / safeLimit),
       },
     },
   });
 });
 
+const getProviderCompletedJobs = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+
+  const provider = await dB.providers.findById(providerId).select('_id fullName');
+  if (!provider) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
+  }
+
+  const completedJobs = await dB.bookings.find({
+    provider: providerId,
+    status: 'completed',
+  })
+  .populate('customer', 'fullName phoneNumber')
+  .sort({ completedAt: -1 })
+  .lean();
+
+  const formattedJobs = completedJobs.map((job) => ({
+    _id: job._id,
+    service: {
+      name: job.service?.name || 'Service',
+      price: job.service?.price || 0,
+      category: job.service?.category || '',
+    },
+    customer: job.customer ? {
+      _id: job.customer._id,
+      fullName: job.customer.fullName,
+      phoneNumber: job.customer.phoneNumber,
+    } : null,
+    scheduledDate: job.scheduledDate,
+    timeSlot: job.timeSlot,
+    address: job.address,
+    totalAmount: job.totalAmount,
+    serviceFee: job.serviceFee,
+    platformFee: job.platformFee,
+    paymentStatus: job.paymentStatus,
+    completionPhotos: job.completionPhotos || { before: [], after: [] },
+    completionNotes: job.completionNotes || '',
+    completedAt: job.completedAt,
+    createdAt: job.createdAt,
+    rating: job.rating || null,
+  }));
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    count: formattedJobs.length,
+    jobs: formattedJobs,
+  });
+});
 
 
 module.exports = {
@@ -322,4 +383,5 @@ module.exports = {
   getNearMeBusinesses,
   getCategories,
   getProvidersByCategory,
+  getProviderCompletedJobs
 };

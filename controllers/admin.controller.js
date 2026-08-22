@@ -642,37 +642,145 @@ const listNotifications = catchAsync(async (req, res) => {
 // POST /admins/notifications/broadcast
 const broadcastNotification = catchAsync(async (req, res) => {
   const { title, body, type = 'system', target } = req.body;
-  if (!title || !body) throw new ApiError(httpStatus.BAD_REQUEST, 'Title and body are required.');
+  
+  if (!title || !body) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Title and body are required.');
+  }
+  
   if (!['all', 'providers', 'customers'].includes(target)) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'target must be one of: all, providers, customers.');
   }
 
+  // Fetch recipients with valid push tokens
   let recipients = [];
+  
   if (target === 'all' || target === 'providers') {
-    const providers = await dB.providers.find({ isBanned: false }).select('_id expoPushToken').lean();
-    recipients.push(...providers.map((p) => ({ id: p._id.toString(), actorType: 'provider', pushToken: p.expoPushToken })));
+    const providers = await dB.providers
+      .find({ isBanned: false, expoPushToken: { $exists: true, $ne: null, $ne: '' } })
+      .select('_id expoPushToken')
+      .lean();
+    
+    recipients.push(...providers.map((p) => ({
+      id: p._id.toString(),
+      actorType: 'provider',
+      pushToken: p.expoPushToken
+    })));
   }
+  
   if (target === 'all' || target === 'customers') {
-    const customers = await dB.customers.find({ isBanned: false }).select('_id expoPushToken').lean();
-    recipients.push(...customers.map((c) => ({ id: c._id.toString(), actorType: 'customer', pushToken: c.expoPushToken })));
+    const customers = await dB.customers
+      .find({ isBanned: false, expoPushToken: { $exists: true, $ne: null, $ne: '' } })
+      .select('_id expoPushToken')
+      .lean();
+    
+    recipients.push(...customers.map((c) => ({
+      id: c._id.toString(),
+      actorType: 'customer',
+      pushToken: c.expoPushToken
+    })));
   }
 
-  // Fire-and-forget: send in background
-  setImmediate(async () => {
-    for (const r of recipients) {
-      await notificationService.sendPushNotification({
-        userId: r.id,
-        actorType: r.actorType,
-        title,
-        body,
-        type,
-        data: {},
-      }).catch(() => {});
-    }
+  // Filter out duplicates (if a user is both provider and customer)
+  const uniqueRecipients = Array.from(
+    new Map(recipients.map(r => [r.id, r])).values()
+  );
+
+  // Send response immediately
+  res.json({ 
+    message: `Broadcast queued for ${uniqueRecipients.length} recipient(s).`, 
+    count: uniqueRecipients.length 
   });
 
-  res.json({ message: `Broadcast queued for ${recipients.length} recipient(s).`, count: recipients.length });
+  // Process notifications in background with proper error handling
+  if (uniqueRecipients.length > 0) {
+    // Use queue or background job instead of setImmediate for production
+    processNotificationsInBackground(uniqueRecipients, { title, body, type });
+  }
 });
+
+// Background notification processor
+// Enhanced notification sending with logging
+async function processNotificationsInBackground(recipients, notificationData) {
+  const { title, body, type } = notificationData;
+  const results = {
+    sent: 0,
+    failed: 0,
+    invalidTokens: [],
+    details: [] // Add detailed logging
+  };
+
+  console.log(`Starting broadcast to ${recipients.length} recipients`);
+  console.log(`Notification: ${title} - ${body}`);
+
+  // Log each recipient's token (first 10 chars for privacy)
+  recipients.forEach((r, index) => {
+    console.log(`Recipient ${index + 1}: ${r.actorType} ${r.id} - Token: ${r.pushToken?.substring(0, 15)}...`);
+  });
+
+  const batchSize = 50;
+  for (let i = 0; i < recipients.length; i += batchSize) {
+    const batch = recipients.slice(i, i + batchSize);
+    
+    await Promise.allSettled(
+      batch.map(async (r) => {
+        try {
+          console.log(`Attempting to send to ${r.actorType} ${r.id}`);
+          
+          const result = await notificationService.sendPushNotification({
+            userId: r.id,
+            actorType: r.actorType,
+            title,
+            body,
+            type,
+            data: { type, timestamp: Date.now() },
+          });
+
+          results.sent++;
+          results.details.push({
+            userId: r.id,
+            status: 'sent',
+            token: r.pushToken?.substring(0, 10)
+          });
+          
+          console.log(`✅ Sent to ${r.actorType} ${r.id}`);
+          
+        } catch (error) {
+          results.failed++;
+          
+          console.error(`❌ Failed to send to ${r.actorType} ${r.id}:`, {
+            message: error.message,
+            response: error?.response?.data,
+            status: error?.response?.status
+          });
+          
+          // Check if it's an invalid token
+          if (error?.response?.data?.details?.error === 'DeviceNotRegistered' ||
+              error?.message?.includes('DeviceNotRegistered') ||
+              error?.response?.status === 404) {
+            results.invalidTokens.push(r.id);
+            await clearInvalidToken(r.id, r.actorType);
+            console.log(`🗑️ Cleared invalid token for ${r.actorType} ${r.id}`);
+          }
+        }
+      })
+    );
+  }
+
+  console.log(`Broadcast completed: ${results.sent} sent, ${results.failed} failed`);
+  console.log('Detailed results:', JSON.stringify(results.details, null, 2));
+  
+  return results;
+}
+
+// Helper to clear invalid tokens
+async function clearInvalidToken(userId, actorType) {
+  try {
+    const collection = actorType === 'provider' ? dB.providers : dB.customers;
+    await collection.findByIdAndUpdate(userId, { expoPushToken: null });
+  } catch (error) {
+    console.error(`Failed to clear token for ${userId}:`, error);
+  }
+}
 
 // ─── AGENTS ───────────────────────────────────────────────────────────────────
 

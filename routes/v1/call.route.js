@@ -1,35 +1,67 @@
-const express = require('express');
-const { verifyToken } = require('../../middlewares/verify');
-const { allowedMethod } = require('../../middlewares/headers');
-const { unAllowedMethod } = require('../../middlewares/method');
-const callController = require('../../controllers/call.controller');
+const express =
+  require('express');
 
-const router = express.Router();
-router.use(allowedMethod);
+const {
+  verifyToken,
+} = require('../../middlewares/verify');
 
-// Initiate a call (creates Cloudflare RealtimeKit session)
-router.route('/initiate')
-  .post(verifyToken, callController.initiateCall)
-  .all(unAllowedMethod);
+const {
+  allowedMethod,
+} = require('../../middlewares/headers');
 
-// Call history
-router.route('/history')
-  .get(verifyToken, callController.callHistory)
-  .all(unAllowedMethod);
+const {
+  unAllowedMethod,
+} = require('../../middlewares/method');
 
-// Answer a call
-router.route('/:id/answer')
-  .put(verifyToken, callController.answerCall)
-  .all(unAllowedMethod);
+const callController =
+  require('../../controllers/call.controller');
 
-// Reject a call
-router.route('/:id/reject')
-  .put(verifyToken, callController.rejectCall)
-  .all(unAllowedMethod);
+const router =
+  express.Router();
 
-// End a call
-router.route('/:id/end')
-  .put(verifyToken, callController.endCall)
-  .all(unAllowedMethod);
+router.use(
+  allowedMethod
+);
 
-module.exports = router;
+router
+  .route('/initiate')
+  .post(
+    verifyToken,
+    callController.initiateCall
+  )
+  .all(
+    unAllowedMethod
+  );
+
+router
+  .route('/:id/accept')
+  .post(
+    verifyToken,
+    callController.acceptCall
+  )
+  .all(
+    unAllowedMethod
+  );
+
+router
+  .route('/:id/reject')
+  .post(
+    verifyToken,
+    callController.rejectCall
+  )
+  .all(
+    unAllowedMethod
+  );
+
+router
+  .route('/:id/end')
+  .put(
+    verifyToken,
+    callController.endCall
+  )
+  .all(
+    unAllowedMethod
+  );
+
+module.exports =
+  router;

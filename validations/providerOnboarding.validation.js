@@ -22,8 +22,15 @@ const updateLocation = {
     city: Joi.string().trim().required(),
     area: Joi.string().trim().allow('', null),
     address: Joi.string().trim().required(),
-    latitude: Joi.number().min(-90).max(90).allow(null),
-    longitude: Joi.number().min(-180).max(180).allow(null),
+    latitude: Joi.number()
+      .min(-90)
+      .max(90)
+      .required(),
+
+    longitude: Joi.number()
+      .min(-180)
+      .max(180)
+      .required(),
     radius: Joi.string().valid('5KM', '10KM', '15KM', '20KM', 'Anywhere in my city').default('10KM'),  // ← updated
     travelOutsideArea: Joi.boolean().default(true)
   })

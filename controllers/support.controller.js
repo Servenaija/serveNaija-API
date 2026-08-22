@@ -350,34 +350,54 @@ const assignTicket = catchAsync(async (req, res) => {
 });
 
 // Admin sends message
+// Admin sends message
 const sendAdminMessage = catchAsync(async (req, res) => {
   const { ticketId } = req.params;
   const { message } = req.body;
-  const adminId = req.user._id.toString();
-  const adminName = req.user.fullName || 'Admin';
 
-  if (!message) {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'Message is required');
+  const adminId = req.user._id.toString();
+  const adminName =
+    req.user.fullName ||
+    req.user.firstName ||
+    'Admin';
+
+  if (!message || !message.trim()) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'Message is required'
+    );
   }
 
-  const ticket = await SupportTicket.findById(ticketId);
+  const ticket =
+    await SupportTicket.findById(ticketId);
 
   if (!ticket) {
-    throw new ApiError(httpStatus.NOT_FOUND, 'Ticket not found');
+    throw new ApiError(
+      httpStatus.NOT_FOUND,
+      'Ticket not found'
+    );
   }
 
-  if (ticket.status === 'closed') {
-    throw new ApiError(httpStatus.BAD_REQUEST, 'This ticket is closed');
+  if (
+    ticket.status === 'closed' ||
+    ticket.status === 'resolved'
+  ) {
+    throw new ApiError(
+      httpStatus.BAD_REQUEST,
+      'This ticket is closed'
+    );
   }
 
+  // Create message
   ticket.messages.push({
     senderId: adminId,
     senderType: 'admin',
     senderName: adminName,
-    text: message,
+    text: message.trim(),
     createdAt: new Date(),
     readBy: [adminId],
   });
+
   ticket.lastMessageAt = new Date();
   ticket.unreadCount += 1;
 
@@ -388,25 +408,66 @@ const sendAdminMessage = catchAsync(async (req, res) => {
 
   await ticket.save();
 
-  // Emit socket event to user
+  const savedMessage =
+    ticket.messages[
+      ticket.messages.length - 1
+    ];
+
   const io = req.app.get('io');
+
   if (io) {
-    io.to(`user_${ticket.user.userId}`).emit('new_support_message', {
-      ticketId: ticket._id.toString(),
-      message: ticket.messages[ticket.messages.length - 1],
+    const normalizedTicketId =
+      ticket._id.toString();
+
+    const ticketRoom =
+      `ticket_${normalizedTicketId}`;
+
+    const userRoom =
+      `user_${ticket.user.userId}`;
+
+    const payload = {
+      ticketId: normalizedTicketId,
+      message: savedMessage,
       status: ticket.status,
-    });
-    io.to('admin_support').emit('new_ticket_message', {
-      ticketId: ticket._id.toString(),
-      message: ticket.messages[ticket.messages.length - 1],
-      status: ticket.status,
-    });
+    };
+
+    // Send to everyone currently inside this ticket
+    io.to(ticketRoom).emit(
+      'new_ticket_message',
+      payload
+    );
+
+    // Also send directly to the user
+    io.to(userRoom).emit(
+      'new_ticket_message',
+      payload
+    );
+
+    // Keep admin support updated
+    io.to('admin_support').emit(
+      'new_ticket_message',
+      payload
+    );
+
+    console.log(
+      'SUPPORT MESSAGE SOCKET EMITTED:',
+      {
+        ticketId: normalizedTicketId,
+        ticketRoom,
+        userRoom,
+        event: 'new_ticket_message',
+        messageId:
+          savedMessage._id?.toString(),
+      }
+    );
   }
 
   res.json({
     success: true,
     message: 'Message sent',
-    data: { ticket },
+    data: {
+      ticket,
+    },
   });
 });
 

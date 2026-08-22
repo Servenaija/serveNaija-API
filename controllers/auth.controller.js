@@ -4,7 +4,9 @@ const catchAsync = require('../utils/catchAsync');
 const { authService, userService, tokenService, emailService } = require('../services');
 const { dB } = require('../models');
 const Sentry = require('@sentry/node');
-
+const { sendMagicLinkEmail } = require('../services/email.service');
+const  Customer  = require('../models/customer'); 
+const Provider = require('../models/provider')
 const TOKEN_TTL_MINUTES = 20;
 
 function generate6DigitCode() {
@@ -167,6 +169,58 @@ const forgotPassword = catchAsync(async (req, res) => {
   });
 });
 
+
+const sendMagicLink = catchAsync(async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(httpStatus.BAD_REQUEST).json({
+      status: false,
+      message: 'Email is required'
+    });
+  }
+
+  // Search for user in both Customer and Provider collections
+  let user = await Customer.findOne({ email });
+  let userType = 'customer';
+
+  if (!user) {
+    user = await Provider.findOne({ email });
+    userType = 'provider';
+  }
+
+  if (!user) {
+    return res.status(httpStatus.OK).json({
+      status: true,
+      message: 'If an account exists, you will receive a magic link'
+    });
+  }
+
+  // Generate reset password token
+  const resetToken = await tokenService.generateResetPasswordToken(email, userType);
+
+  const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}&email=${email}&type=${userType}`;
+
+  try {
+    await sendMagicLinkEmail(email, {
+      name: user.fullName || user.name || 'User',
+      magicLink: resetUrl,
+      expiryMinutes: 15,
+      userType: userType,
+    });
+
+    res.status(httpStatus.OK).json({
+      status: true,
+      message: 'Magic link sent to your email'
+    });
+  } catch (err) {
+    console.error('Failed to send magic link:', err);
+    res.status(httpStatus.INTERNAL_SERVER_ERROR).json({
+      status: false,
+      message: 'Failed to send magic link'
+    });
+  }
+});
 module.exports = {
   registerUser,
   registerProvider,
@@ -175,4 +229,5 @@ module.exports = {
   logout,
   refreshTokens,
   forgotPassword,
+  sendMagicLink
 };

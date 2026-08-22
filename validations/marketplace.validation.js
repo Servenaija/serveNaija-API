@@ -87,6 +87,11 @@ const createReview = {
     text: Joi.string().trim().max(1000).optional().allow(''),
   }),
 };
+const cancelOrder = {
+  body: Joi.object().keys({
+    reason: Joi.string().trim().max(500).optional().allow(''),
+  }),
+};
 
 module.exports = {
   createStore,
@@ -95,4 +100,5 @@ module.exports = {
   updateProduct,
   createOrder,
   createReview,
+  cancelOrder
 };

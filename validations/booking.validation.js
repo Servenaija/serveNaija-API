@@ -2,26 +2,41 @@ const Joi = require('joi');
 
 const createBooking = {
   body: Joi.object().keys({
-    providerId: Joi.string().required().messages({ 'any.required': 'Provider is required.' }),
+    providerId: Joi.string().required().messages({
+      'any.required': 'Provider is required.'
+    }),
     serviceId: Joi.string().optional(),
-    serviceName: Joi.string().trim().required().messages({ 'any.required': 'Service name is required.' }),
-    servicePrice: Joi.number().min(0).required().messages({ 'any.required': 'Service price is required.' }),
+    serviceName: Joi.string().trim().required().messages({
+      'any.required': 'Service name is required.'
+    }),
+    servicePrice: Joi.number().min(0).required().messages({
+      'any.required': 'Service price is required.'
+    }),
     serviceCategory: Joi.string().trim().optional(),
     description: Joi.string().trim().max(1000).optional(),
-    photos: Joi.array().items(Joi.string()).max(5).optional(),
     scheduledDate: Joi.date().iso().optional(),
     timeSlot: Joi.string().trim().optional(),
-    address: Joi.object({
-      full: Joi.string().trim().required(),
-      landmark: Joi.string().trim().optional().allow(''),
-      state: Joi.string().trim().optional().allow(''),
-      city: Joi.string().trim().optional().allow(''),
-      coordinates: Joi.object({
-        latitude: Joi.number().optional().allow(null),
-        longitude: Joi.number().optional().allow(null),
-      }).optional(),
-    }).required().messages({ 'any.required': 'Service address is required.' }),
+    address: Joi.alternatives().try(
+      Joi.object({
+        full: Joi.string().trim().required(),
+        landmark: Joi.string().trim().optional().allow(''),
+        state: Joi.string().trim().optional().allow(''),
+        city: Joi.string().trim().optional().allow(''),
+        coordinates: Joi.object({
+          latitude: Joi.number().optional().allow(null),
+          longitude: Joi.number().optional().allow(null),
+        }).optional(),
+      }).required(),
+      Joi.string() // Allow string for FormData
+    ).required().messages({
+      'any.required': 'Service address is required.'
+    }),
     additionalNotes: Joi.string().trim().max(500).optional().allow(''),
+    paymentMethod: Joi.string().valid('wallet', 'paystack', 'card').optional(),
+     photos: Joi.alternatives().try(
+      Joi.array().items(Joi.string()),
+      Joi.array().items(Joi.object())
+    ).optional(),
   }),
 };
 
@@ -55,7 +70,6 @@ const additionalPayment = {
     reason: Joi.string().trim().required().messages({ 'any.required': 'Reason is required.' }),
     description: Joi.string().trim().max(250).required(),
     amount: Joi.number().min(1).required().messages({ 'any.required': 'Amount is required.' }),
-    evidencePhotos: Joi.array().items(Joi.string()).max(5).optional(),
   }),
 };
 
@@ -74,6 +88,19 @@ const verifyStartCode = {
     }),
   }),
 };
+const payAdditionalPayment = {
+  body: Joi.object().keys({
+    amount: Joi.number().min(1).required().messages({
+      'any.required': 'Amount is required.',
+      'number.min': 'Amount must be greater than 0.',
+    }),
+    paymentMethod: Joi.string().valid('wallet', 'paystack', 'card').required().messages({
+      'any.required': 'Payment method is required.',
+      'any.only': 'Invalid payment method.',
+    }),
+    paystackReference: Joi.string().optional(),
+  }),
+};
 
 module.exports = {
   createBooking,
@@ -83,4 +110,5 @@ module.exports = {
   additionalPayment,
   declineJob,
   verifyStartCode,
+  payAdditionalPayment
 };

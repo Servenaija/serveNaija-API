@@ -1,3 +1,5 @@
+// services/email.service.js
+
 const { mailtrapClient, sender } = require('./mailtrap');
 
 const sendEmail = async (to, subject, html) => {
@@ -39,76 +41,49 @@ const sendVerificationCodeEmail = async (to, options = {}) => {
   return sendEmail(to, subject, html);
 };
 
-const sendPasswordResetSuccessEmail = async (to, options = {}) => {
-  const subject = 'ServeNaija - Password Reset Successful';
+const sendMagicLinkEmail = async (to, options = {}) => {
+  const subject = 'ServeNaija - Magic Link Login';
   const html = `
     <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
-      <h2>Password updated</h2>
-      <p>Hello ${options.name || 'there'}, your password was changed successfully.</p>
+      <h2>ServeNaija Magic Link</h2>
+      <p>Hello ${options.name || 'there'},</p>
+      <p>Click the link below to log in to your account:</p>
+      <p style="margin: 20px 0;">
+        <a href="${options.magicLink}" style="background-color: #165B43; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block;">
+          Log In to ServeNaija
+        </a>
+      </p>
+      <p>Or copy and paste this URL into your browser:</p>
+      <p style="word-break: break-all; background: #f0f0f0; padding: 10px; border-radius: 5px; font-size: 12px;">
+        ${options.magicLink}
+      </p>
+      <p>This link expires in ${options.expiryMinutes || 15} minutes.</p>
+      <p>If you did not request this, you can ignore this email.</p>
     </div>
   `;
 
   return sendEmail(to, subject, html);
 };
 
-const sendRiderApprovalEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Application Approved',
-    `<p>Hello ${options.name || 'there'}, your application has been approved.</p>`
-  );
+const sendPasswordResetSuccessEmail = async (to, options = {}) => {
+  const subject = 'ServeNaija - Password Reset Successful';
+  const html = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
+      <h2>Password Updated</h2>
+      <p>Hello ${options.name || 'there'}, your password was changed successfully.</p>
+      <p>If you did not perform this change, please contact support immediately.</p>
+    </div>
+  `;
 
-const sendRiderDenialEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Application Update',
-    `<p>Hello ${options.name || 'there'}, your application was not approved.</p>`
-  );
+  return sendEmail(to, subject, html);
+};
 
-const sendRiderUnderReviewEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Application Under Review',
-    `<p>Hello ${options.name || 'there'}, your application is under review.</p>`
-  );
 
-const sendTransactionPinEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Verify PIN',
-    `<p>Hello ${options.name || 'there'}, your verification code is ${options.verificationCode || ''}.</p>`
-  );
-
-const sendWithdrawalPendingEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Withdrawal Pending',
-    `<p>Hello ${options.name || 'there'}, your withdrawal request is pending.</p>`
-  );
-
-const sendWithdrawalApprovedEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Withdrawal Approved',
-    `<p>Hello ${options.name || 'there'}, your withdrawal request has been approved.</p>`
-  );
-
-const sendWithdrawalRejectedEmail = async (to, options = {}) =>
-  sendEmail(
-    to,
-    'ServeNaija - Withdrawal Rejected',
-    `<p>Hello ${options.name || 'there'}, your withdrawal request was rejected.</p>`
-  );
 
 module.exports = {
   sendEmail,
   sendVerificationCodeEmail,
+  sendMagicLinkEmail,
   sendPasswordResetSuccessEmail,
-  sendRiderApprovalEmail,
-  sendRiderDenialEmail,
-  sendRiderUnderReviewEmail,
-  sendTransactionPinEmail,
-  sendWithdrawalPendingEmail,
-  sendWithdrawalApprovedEmail,
-  sendWithdrawalRejectedEmail,
+ 
 };

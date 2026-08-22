@@ -3,7 +3,7 @@ const { verifyToken } = require('../../middlewares/verify');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 const validate = require('../../middlewares/validate');
-const { uploadCompletionPhotos } = require('../../middlewares/upload');
+const { uploadCompletionPhotos, uploadAdditionalPayment, uploadAny } = require('../../middlewares/upload');
 const bookingController = require('../../controllers/booking.controller');
 const bookingValidation = require('../../validations/booking.validation');
 
@@ -40,13 +40,13 @@ router.route('/jobs/:id/complete')
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/additional-payment')
-  .post(verifyToken, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
+  .post(verifyToken, uploadAdditionalPayment, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
   .all(unAllowedMethod);
 
 // ─── CUSTOMER: Bookings ─────────────────── (MOVED DOWN - DYNAMIC ROUTES LAST)
 router.route('/')
   .get(verifyToken, bookingController.listBookings)
-  .post(verifyToken, validate(bookingValidation.createBooking), bookingController.createBooking)
+  .post(verifyToken, uploadAny, validate(bookingValidation.createBooking), bookingController.createBooking)
   .all(unAllowedMethod);
 
 router.route('/:id')
@@ -69,4 +69,19 @@ router.route('/:id/rate')
   .post(verifyToken, validate(bookingValidation.rateBooking), bookingController.rateBooking)
   .all(unAllowedMethod);
 
+router.route('/:id/additional-payment/pay')
+  .post(
+    verifyToken,
+    validate(bookingValidation.payAdditionalPayment),
+    bookingController.payAdditionalPayment
+  )
+  .all(unAllowedMethod);
+
+router.route(
+  '/:bookingId/confirm-completion')
+  .put(
+    verifyToken,
+    bookingController.confirmJobCompletion
+  )
+  .all(unAllowedMethod);
 module.exports = router;
