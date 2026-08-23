@@ -8,9 +8,16 @@ const STREAM_API_KEY =
 const STREAM_API_SECRET =
   process.env.STREAM_API_SECRET;
 
-const RING_TIMEOUT_MS = 30_000;
+const RING_TIMEOUT_MS =
+  30_000;
 
 let client = null;
+
+/**
+ * =========================================================
+ * STREAM CLIENT
+ * =========================================================
+ */
 
 function getStreamClient() {
   if (!client) {
@@ -34,8 +41,11 @@ function getStreamClient() {
 }
 
 /**
- * Generate Stream token.
+ * =========================================================
+ * GENERATE STREAM TOKEN
+ * =========================================================
  */
+
 function generateToken(userId) {
   if (!userId) {
     throw new Error(
@@ -56,8 +66,11 @@ function generateToken(userId) {
 }
 
 /**
- * Upsert Stream users.
+ * =========================================================
+ * UPSERT STREAM USERS
+ * =========================================================
  */
+
 async function upsertUsers(
   users = []
 ) {
@@ -71,23 +84,28 @@ async function upsertUsers(
           user &&
           user.id
       )
-      .map((user) => ({
-        id:
-          String(user.id),
+      .map(
+        (user) => ({
+          id:
+            String(
+              user.id
+            ),
 
-        role: 'user',
+          role:
+            'user',
 
-        name:
-          user.name ||
-          'User',
+          name:
+            user.name ||
+            'User',
 
-        ...(user.image
-          ? {
-              image:
-                user.image,
-            }
-          : {}),
-      }));
+          ...(user.image
+            ? {
+                image:
+                  user.image,
+              }
+            : {}),
+        })
+      );
 
   console.log(
     'STREAM STEP 1: Upserting users'
@@ -133,10 +151,23 @@ async function upsertUsers(
 }
 
 /**
- * Create Stream ringing call.
+ * =========================================================
+ * CREATE STREAM CALL
+ * =========================================================
  *
- * Stream owns the 30-second ringing timeout.
+ * Important:
+ *
+ * We keep your existing function arguments.
+ *
+ * We add caller information to Stream custom data so the
+ * frontend can read:
+ *
+ * call.data.created_by
+ *
+ * without changing any existing frontend parameter names.
+ * =========================================================
  */
+
 async function createCall({
   callId,
   createdByUserId,
@@ -178,6 +209,12 @@ async function createCall({
     }
   );
 
+  /**
+   * ---------------------------------------------------------
+   * UPSERT BOTH USERS
+   * ---------------------------------------------------------
+   */
+
   await upsertUsers([
     {
       id:
@@ -204,25 +241,92 @@ async function createCall({
     },
   ]);
 
+  /**
+   * ---------------------------------------------------------
+   * STREAM CALL
+   * ---------------------------------------------------------
+   */
+
   const call =
     streamClient.video.call(
       'default',
-      String(callId)
+      String(
+        callId
+      )
     );
+
+  /**
+   * ---------------------------------------------------------
+   * CREATE / GET CALL
+   * ---------------------------------------------------------
+   *
+   * IMPORTANT:
+   *
+   * `created_by` is included in custom data.
+   *
+   * This is what your frontend router reads:
+   *
+   * incomingCall.data.created_by.id
+   * incomingCall.data.created_by.name
+   * incomingCall.data.created_by.image
+   *
+   * `video` is also included because your frontend reads:
+   *
+   * incomingCall.data.video
+   * ---------------------------------------------------------
+   */
 
   const response =
     await call.getOrCreate({
-      ring: true,
+      ring:
+        true,
 
       video:
-        Boolean(isVideo),
+        Boolean(
+          isVideo
+        ),
 
       data: {
+        /**
+         * Caller information.
+         */
+        created_by: {
+          id:
+            String(
+              createdByUserId
+            ),
+
+          name:
+            createdByName ||
+            'Caller',
+
+          ...(createdByImage
+            ? {
+                image:
+                  createdByImage,
+              }
+            : {}),
+        },
+
+        /**
+         * Keep your existing created_by_id too.
+         */
         created_by_id:
           String(
             createdByUserId
           ),
 
+        /**
+         * Call type.
+         */
+        video:
+          Boolean(
+            isVideo
+          ),
+
+        /**
+         * Members.
+         */
         members: [
           {
             user_id:
@@ -230,6 +334,7 @@ async function createCall({
                 createdByUserId
               ),
           },
+
           {
             user_id:
               String(
@@ -239,13 +344,7 @@ async function createCall({
         ],
 
         /**
-         * Stream owns the timeout.
-         *
-         * Caller:
-         * 30 sec unanswered -> timeout.
-         *
-         * Callee:
-         * 30 sec unanswered -> timeout.
+         * Ring configuration.
          */
         settings_override: {
           ring: {
@@ -263,8 +362,13 @@ async function createCall({
     });
 
   console.log(
-    'Stream call created successfully:',
-    callId
+    'STREAM CALL CREATED:',
+    {
+      callId,
+      createdByUserId,
+      recipientUserId,
+      isVideo,
+    }
   );
 
   return {
@@ -272,6 +376,12 @@ async function createCall({
     response,
   };
 }
+
+/**
+ * =========================================================
+ * GET STREAM CALL
+ * =========================================================
+ */
 
 function getCall(
   callId
@@ -287,15 +397,25 @@ function getCall(
 
   return streamClient.video.call(
     'default',
-    String(callId)
+    String(
+      callId
+    )
   );
 }
+
+/**
+ * =========================================================
+ * END STREAM CALL
+ * =========================================================
+ */
 
 async function endCall(
   callId
 ) {
   const call =
-    getCall(callId);
+    getCall(
+      callId
+    );
 
   try {
     await call.end();
@@ -309,11 +429,19 @@ async function endCall(
       'Failed to end Stream call'
     );
 
-    logStreamError(error);
+    logStreamError(
+      error
+    );
 
     throw error;
   }
 }
+
+/**
+ * =========================================================
+ * STREAM ERROR LOGGER
+ * =========================================================
+ */
 
 function logStreamError(
   error
@@ -378,6 +506,12 @@ function logStreamError(
     '------------------------------------------------'
   );
 }
+
+/**
+ * =========================================================
+ * EXPORT
+ * =========================================================
+ */
 
 module.exports = {
   getStreamClient,
