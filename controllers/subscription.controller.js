@@ -11,7 +11,7 @@ const Wallet = require('../models/wallet');
 // Provider plan prices
 const PROVIDER_PLANS = {
   standard: {
-    firstTime: 10000,
+    firstTime: 5000,
     renewal: 5000,
     level: 1,
     name: 'Standard Provider',
