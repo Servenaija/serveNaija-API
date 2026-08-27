@@ -66,14 +66,61 @@ const loginUser = catchAsync(async (req, res) => {
   const { email, password, expoPushToken } = req.body;
   const user = await authService.loginUserWithEmailAndPassword(email, password);
 
+  // Check if user is banned
   if (user.isBanned) {
-    return res.status(httpStatus.FORBIDDEN).send({ message: 'Your account has been suspended. Please contact support.' });
+    return res.status(httpStatus.FORBIDDEN).send({ 
+      message: 'Your account has been suspended. Please contact support.' 
+    });
   }
 
+  // Check if user is deactivated
+  if (user.isDeactivated) {
+    // Check if 6 months have passed for permanent deletion
+    const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+    if (user.deactivatedAt && user.deactivatedAt < sixMonthsAgo) {
+      return res.status(httpStatus.GONE).send({ 
+        message: 'Your account has been permanently deleted. Please create a new account.' 
+      });
+    }
+
+    // Account is deactivated but within 6 months - allow reactivation
+    user.isDeactivated = false;
+    user.deactivatedAt = null;
+    user.lastLogin = new Date();
+    await user.save();
+
+    // Send notification about reactivation
+    try {
+      const notificationService = require('../services/notification.service');
+      await notificationService.sendPushNotification({
+        userId: user._id.toString(),
+        actorType: 'customer',
+        title: 'Account Reactivated',
+        body: 'Your account has been reactivated. Welcome back!',
+        type: 'system',
+        data: { screen: 'profile' },
+      });
+    } catch (error) {
+      console.log('Error sending reactivation notification:', error);
+    }
+  }
+
+  // Check if user is deleted (hard delete)
+  if (user.isDeleted) {
+    return res.status(httpStatus.GONE).send({ 
+      message: 'This account has been deleted.' 
+    });
+  }
+
+  // Update expo push token if provided
   if (expoPushToken) {
     user.expoPushToken = String(expoPushToken);
     await user.save();
   }
+
+  // Update last login
+  user.lastLogin = new Date();
+  await user.save();
 
   const id = user._id.toString();
   const tokens = await tokenService.generateAuthTokens({ id, actor: 'customer' });

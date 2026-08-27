@@ -35,7 +35,7 @@ router.route('/wallet/withdraw')
   .post(verifyToken, customerController.withdrawFromWallet)
   .all(unAllowedMethod);
 
-  router.route('/me')
+router.route('/me')
   .get(verifyToken, customerController.getProfile)
   .put(verifyToken, customerController.updateProfile)
   .all(unAllowedMethod);
@@ -55,6 +55,14 @@ router.route('/membership/upgrade')
 
 router.route('/membership/has')
   .get(verifyToken, customerController.hasMembership)
+  .all(unAllowedMethod);
+
+router.route('/reactive')
+  .post(customerController.reactivateAccount)
+  .all(unAllowedMethod);
+router.route('/deactive')
+
+  .post(verifyToken, customerController.deactivateAccount)
   .all(unAllowedMethod);
 
 module.exports = router;

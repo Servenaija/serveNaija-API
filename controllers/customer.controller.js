@@ -901,6 +901,117 @@ const updateProfile = catchAsync(async (req, res) => {
   });
 });
 
+const deactivateAccount = catchAsync(async (req, res) => {
+  const userId = req.user._id;
+
+  const customer = await dB.customers.findById(userId);
+  if (!customer) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Customer not found');
+  }
+
+  // Check if already deactivated
+  if (customer.isDeactivated) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Account is already deactivated');
+  }
+
+  // Set deactivation date
+  customer.deactivatedAt = new Date();
+  customer.isDeactivated = true;
+  customer.isActive = false;
+
+  await customer.save();
+
+  // Send notification
+  notificationService.sendPushNotification({
+    userId: userId.toString(),
+    actorType: 'customer',
+    title: 'Account Deactivated',
+    body: 'Your account has been deactivated. You can reactivate by logging in within 6 months.',
+    type: 'system',
+    data: { screen: 'login' },
+  }).catch(() => {});
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    message: 'Account deactivated successfully. You can reactivate by logging in within 6 months.',
+    data: {
+      deactivatedAt: customer.deactivatedAt,
+      reactivationDeadline: new Date(Date.now() + 6 * 30 * 24 * 60 * 60 * 1000), // 6 months from now
+    },
+  });
+});
+
+// ============================================
+// REACTIVATE ACCOUNT
+// ============================================
+const reactivateAccount = catchAsync(async (req, res) => {
+  const { email, password } = req.body;
+
+  const customer = await dB.customers.findOne({ email }).select('+password');
+  if (!customer) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'User not found');
+  }
+
+  // Check if account was deactivated
+  if (!customer.isDeactivated) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Account is already active');
+  }
+
+  // Check if 6 months have passed
+  const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+  if (customer.deactivatedAt < sixMonthsAgo) {
+    throw new ApiError(httpStatus.GONE, 'Account has been permanently deleted. Please create a new account.');
+  }
+
+  // Verify password
+  const isPasswordMatch = await bcrypt.compare(password, customer.password);
+  if (!isPasswordMatch) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Invalid credentials');
+  }
+
+  // Reactivate account
+  customer.isDeactivated = false;
+  customer.deactivatedAt = null;
+  customer.lastLogin = new Date();
+
+  await customer.save();
+
+  // Generate tokens
+  const id = customer._id.toString();
+  const tokens = await tokenService.generateAuthTokens({ id, actor: 'customer' });
+
+  const sanitizedUser = sanitizeUser(customer);
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    message: 'Account reactivated successfully. You can now log in.',
+    data: {
+      user: sanitizedUser,
+      tokens,
+    },
+  });
+});
+
+// ============================================
+// PERMANENT DELETE DEACTIVATED ACCOUNTS (Cron Job)
+// ============================================
+const permanentDeleteDeactivatedAccounts = catchAsync(async (req, res) => {
+  const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
+
+  const result = await dB.customers.deleteMany({
+    isDeactivated: true,
+    deactivatedAt: { $lt: sixMonthsAgo },
+  });
+
+  res.status(httpStatus.OK).json({
+    success: true,
+    message: `Permanently deleted ${result.deletedCount} accounts`,
+    data: {
+      deletedCount: result.deletedCount,
+    },
+  });
+});
+
 
 module.exports = {
   getWalletBalance,
@@ -915,4 +1026,7 @@ module.exports = {
   hasMembership,
   getProfile,
   updateProfile,
+  deactivateAccount,
+  reactivateAccount,
+  permanentDeleteDeactivatedAccounts
 };

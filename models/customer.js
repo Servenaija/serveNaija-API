@@ -173,7 +173,9 @@ customerSchema.index({ isEmailVerified: 1, createdAt: -1 });
 customerSchema.index({ 'location.state': 1, 'location.city': 1 });
 customerSchema.index({ agentCode: 1 }, { sparse: true });
 customerSchema.index({ walletId: 1 }, { sparse: true });
-
+customerSchema.index({ isDeactivated: 1, deactivatedAt: 1 });
+customerSchema.index({ isDeleted: 1 });
+customerSchema.index({ isDeactivated: 1, isDeleted: 1 });
 //  Membership indexes
 customerSchema.index({ 'membership.plan': 1 });
 customerSchema.index({ 'membership.expiresAt': 1 });
