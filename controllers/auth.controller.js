@@ -5,8 +5,10 @@ const { authService, userService, tokenService, emailService } = require('../ser
 const { dB } = require('../models');
 const Sentry = require('@sentry/node');
 const { sendMagicLinkEmail } = require('../services/email.service');
-const  Customer  = require('../models/customer'); 
+const Customer = require('../models/customer');
 const Provider = require('../models/provider')
+const notificationService = require('../services/notification.service');
+
 const TOKEN_TTL_MINUTES = 20;
 
 function generate6DigitCode() {
@@ -68,18 +70,19 @@ const loginUser = catchAsync(async (req, res) => {
 
   // Check if user is banned
   if (user.isBanned) {
-    return res.status(httpStatus.FORBIDDEN).send({ 
-      message: 'Your account has been suspended. Please contact support.' 
+    return res.status(httpStatus.FORBIDDEN).send({
+      message: 'Your account has been suspended. Please contact support.'
     });
   }
 
   // Check if user is deactivated
+  let wasReactivated = false;
   if (user.isDeactivated) {
     // Check if 6 months have passed for permanent deletion
     const sixMonthsAgo = new Date(Date.now() - 6 * 30 * 24 * 60 * 60 * 1000);
     if (user.deactivatedAt && user.deactivatedAt < sixMonthsAgo) {
-      return res.status(httpStatus.GONE).send({ 
-        message: 'Your account has been permanently deleted. Please create a new account.' 
+      return res.status(httpStatus.GONE).send({
+        message: 'Your account has been permanently deleted. Please create a new account.'
       });
     }
 
@@ -88,17 +91,20 @@ const loginUser = catchAsync(async (req, res) => {
     user.deactivatedAt = null;
     user.lastLogin = new Date();
     await user.save();
+    wasReactivated = true;
 
-    // Send notification about reactivation
+    // Send push notification about reactivation
     try {
-      const notificationService = require('../services/notification.service');
       await notificationService.sendPushNotification({
         userId: user._id.toString(),
         actorType: 'customer',
-        title: 'Account Reactivated',
-        body: 'Your account has been reactivated. Welcome back!',
+        title: '✅ Account Reactivated',
+        body: 'Your ServeNaija account has been successfully reactivated. Welcome back!',
         type: 'system',
-        data: { screen: 'profile' },
+        data: {
+          screen: 'profile',
+          action: 'account_reactivated'
+        },
       });
     } catch (error) {
       console.log('Error sending reactivation notification:', error);
@@ -107,8 +113,8 @@ const loginUser = catchAsync(async (req, res) => {
 
   // Check if user is deleted (hard delete)
   if (user.isDeleted) {
-    return res.status(httpStatus.GONE).send({ 
-      message: 'This account has been deleted.' 
+    return res.status(httpStatus.GONE).send({
+      message: 'This account has been deleted.'
     });
   }
 
@@ -125,7 +131,18 @@ const loginUser = catchAsync(async (req, res) => {
   const id = user._id.toString();
   const tokens = await tokenService.generateAuthTokens({ id, actor: 'customer' });
 
-  return res.send({ user: sanitizeUser(user), tokens });
+  // Include reactivation flag in response
+  const response = {
+    user: sanitizeUser(user),
+    tokens
+  };
+
+  if (wasReactivated) {
+    response.reactivated = true;
+    response.message = 'Your account has been reactivated. Welcome back!';
+  }
+
+  return res.send(response);
 });
 
 const loginProvider = catchAsync(async (req, res) => {
