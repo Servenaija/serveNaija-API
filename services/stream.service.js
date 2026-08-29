@@ -139,6 +139,7 @@ async function upsertUsers(
  */
 async function createCall({
   callId,
+  mongoCallId,
   createdByUserId,
   recipientUserId,
   createdByName,
@@ -172,6 +173,7 @@ async function createCall({
     'Creating Stream call:',
     {
       callId,
+      mongoCallId,
       createdByUserId,
       recipientUserId,
       isVideo,
@@ -222,6 +224,34 @@ async function createCall({
           String(
             createdByUserId
           ),
+
+        /**
+         * Custom data carried on the Stream call itself.
+         *
+         * The mobile app reads these from incoming-call
+         * events (call.accepted / call.ring / push) because
+         * the CallResponse has no top-level `video` field:
+         *
+         *  - callId:   the ServeNaija (Mongo) call ID, so the
+         *              app can call accept/reject/end endpoints
+         *              for calls answered on the native screen.
+         *
+         *  - callType: 'video' | 'voice' — used to open the
+         *              correct (video) call screen.
+         *
+         *  - video:    boolean duplicate of callType for
+         *              convenience.
+         */
+        custom: {
+          callId:
+            String(mongoCallId || ''),
+
+          callType:
+            isVideo ? 'video' : 'voice',
+
+          video:
+            Boolean(isVideo),
+        },
 
         members: [
           {

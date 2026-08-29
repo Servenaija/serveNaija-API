@@ -876,6 +876,15 @@ const initiateCall =
           callId:
             streamCallId,
 
+          /**
+           * The Mongo call ID is stored on the Stream
+           * call's custom data so the mobile app can
+           * reference the backend call for calls that
+           * are answered / ended on the native screen.
+           */
+          mongoCallId:
+            call._id.toString(),
+
           createdByUserId:
             caller.userId,
 
@@ -1741,6 +1750,564 @@ const endCall =
 
 /**
  * =========================================================
+ * STREAM WEBHOOK
+ * =========================================================
+ *
+ * POST /v1.0/stream/webhook
+ *
+ * Server-to-server endpoint that receives Stream call
+ * lifecycle events. Configure the URL in the Stream
+ * Dashboard (Video -> Webhooks).
+ *
+ * WHY THIS EXISTS:
+ *
+ * When the recipient answers or declines a call on the
+ * NATIVE screen (iOS CallKit / Android Telecom), the mobile
+ * app never calls the ServeNaija accept/reject endpoints —
+ * only Stream knows what happened. Without this webhook:
+ *
+ *  - the Mongo call would stay in 'ringing' forever,
+ *  - the caller would never receive a socket event and
+ *    could keep ringing after the recipient declined.
+ *
+ * Handled events:
+ *
+ *  - call.accepted -> mark accepted (native answer)
+ *  - call.rejected -> mark rejected/busy (native decline)
+ *  - call.missed   -> mark missed (ring timeout)
+ *  - call.ended    -> mark ended/missed (any other end)
+ *
+ * Everything else is acknowledged and ignored.
+ * =========================================================
+ */
+
+const TERMINAL_CALL_STATUSES = [
+  'ended',
+  'rejected',
+  'busy',
+  'missed',
+  'cancelled',
+];
+
+const streamWebhook = async (
+  req,
+  res
+) => {
+  try {
+    const skipVerify =
+      String(
+        process.env
+          .STREAM_WEBHOOK_SKIP_VERIFY ||
+          ''
+      ).toLowerCase() ===
+      'true';
+
+    /**
+     * -----------------------------------------------------
+     * SIGNATURE VERIFICATION
+     * -----------------------------------------------------
+     *
+     * Stream signs the raw request body with the API
+     * secret (HMAC-SHA256, hex). The raw body is captured
+     * by the express.json() verify callback in app.js.
+     *
+     * Set STREAM_WEBHOOK_SKIP_VERIFY=true only for local
+     * debugging without the signature header.
+     */
+
+    if (
+      !skipVerify
+    ) {
+      const signature =
+        req.headers[
+          'x-webhook-signature'
+        ] ||
+        req.headers[
+          'x-signature'
+        ] ||
+        '';
+
+      if (
+        !signature ||
+        !req.rawBody
+      ) {
+        console.warn(
+          'STREAM WEBHOOK: Missing signature or raw body - rejecting.'
+        );
+
+        return res
+          .status(
+            httpStatus.UNAUTHORIZED
+          )
+          .json({
+            message:
+              'Invalid webhook signature.',
+          });
+      }
+
+      const signatureValid =
+        streamService
+          .getStreamClient()
+          .verifyWebhook(
+            req.rawBody,
+            String(
+              signature
+            )
+          );
+
+      if (
+        !signatureValid
+      ) {
+        console.warn(
+          'STREAM WEBHOOK: Signature mismatch - rejecting.'
+        );
+
+        return res
+          .status(
+            httpStatus.UNAUTHORIZED
+          )
+          .json({
+            message:
+              'Invalid webhook signature.',
+          });
+      }
+    }
+
+    const event =
+      Buffer.isBuffer(
+        req.body
+      )
+        ? JSON.parse(
+            req.body.toString(
+              'utf8'
+            )
+          )
+        : typeof req.body ===
+          'string'
+          ? JSON.parse(
+              req.body
+            )
+          : req.body;
+
+    const eventType =
+      String(
+        event?.type ||
+          ''
+      );
+
+    const streamCallId =
+      String(
+        event?.call?.id ||
+          ''
+      );
+
+    console.log(
+      'STREAM WEBHOOK EVENT:',
+      {
+        eventType,
+        streamCallId,
+      }
+    );
+
+    /**
+     * Only call lifecycle events are relevant.
+     * Everything else is acknowledged immediately.
+     */
+    if (
+      !streamCallId ||
+      !eventType.startsWith(
+        'call.'
+      )
+    ) {
+      return res.json({
+        received: true,
+      });
+    }
+
+    const call =
+      await dB.calls.findOne({
+        streamCallId,
+      });
+
+    if (!call) {
+      console.warn(
+        'STREAM WEBHOOK: No ServeNaija call for Stream call:',
+        streamCallId
+      );
+
+      return res.json({
+        received: true,
+      });
+    }
+
+    const io =
+      req.app.get(
+        'io'
+      );
+
+    const endedAt =
+      new Date();
+
+    /**
+     * -----------------------------------------------------
+     * call.accepted
+     * -----------------------------------------------------
+     *
+     * The recipient answered on the native screen.
+     */
+    if (
+      eventType ===
+        'call.accepted' &&
+      call.status ===
+        'ringing'
+    ) {
+      call.status =
+        'accepted';
+
+      call.startedAt =
+        call.startedAt ||
+        new Date(
+          event?.created_at ||
+            Date.now()
+        );
+
+      call.rejectReason =
+        null;
+
+      await call.save();
+
+      console.log(
+        'STREAM WEBHOOK: Call accepted:',
+        call._id.toString()
+      );
+
+      await createCallStatusMessage(
+        call,
+        io
+      );
+
+      emitToCallParticipants(
+        io,
+        call,
+        'call_accepted',
+        {
+          status:
+            'accepted',
+        }
+      );
+
+      return res.json({
+        received: true,
+      });
+    }
+
+    /**
+     * -----------------------------------------------------
+     * call.rejected
+     * -----------------------------------------------------
+     *
+     * The recipient declined on the native screen.
+     * reason: 'decline' | 'busy'
+     */
+    if (
+      eventType ===
+        'call.rejected' &&
+      call.status ===
+        'ringing'
+    ) {
+      const reason =
+        String(
+          event?.reason ||
+            'decline'
+        ).toLowerCase() ===
+        'busy'
+          ? 'busy'
+          : 'rejected';
+
+      call.status =
+        getTerminationStatus(
+          reason
+        );
+
+      call.rejectReason =
+        reason;
+
+      call.endedAt =
+        endedAt;
+
+      call.duration = 0;
+
+      await call.save();
+
+      console.log(
+        'STREAM WEBHOOK: Call rejected:',
+        {
+          callId:
+            call._id.toString(),
+
+          reason,
+        }
+      );
+
+      await createCallStatusMessage(
+        call,
+        io
+      );
+
+      emitToCallParticipants(
+        io,
+        call,
+        'call_rejected',
+        {
+          reason,
+
+          status:
+            call.status,
+
+          duration: 0,
+        }
+      );
+
+      emitToCallParticipants(
+        io,
+        call,
+        'call_ended',
+        {
+          reason,
+
+          status:
+            call.status,
+
+          duration: 0,
+        }
+      );
+
+      /**
+       * End the Stream call so every connected
+       * device also receives the Stream
+       * `call.ended` event as a second signal
+       * to stop ringing.
+       */
+      if (
+        call.streamCallId
+      ) {
+        streamService
+          .endCall(
+            call.streamCallId
+          )
+          .catch(
+            (
+              streamError
+            ) => {
+              console.error(
+                'STREAM WEBHOOK END ERROR:',
+                streamError?.message ||
+                  streamError
+              );
+            }
+          );
+      }
+
+      return res.json({
+        received: true,
+      });
+    }
+
+    /**
+     * -----------------------------------------------------
+     * call.missed
+     * -----------------------------------------------------
+     *
+     * The ringing timeout elapsed (nobody answered).
+     */
+    if (
+      eventType ===
+        'call.missed' &&
+      call.status ===
+        'ringing'
+    ) {
+      call.status =
+        'missed';
+
+      call.rejectReason =
+        'timeout';
+
+      call.endedAt =
+        endedAt;
+
+      call.duration = 0;
+
+      await call.save();
+
+      console.log(
+        'STREAM WEBHOOK: Call missed:',
+        call._id.toString()
+      );
+
+      await createCallStatusMessage(
+        call,
+        io
+      );
+
+      emitToCallParticipants(
+        io,
+        call,
+        'call_missed',
+        {
+          reason:
+            'timeout',
+
+          status:
+            'missed',
+
+          duration: 0,
+        }
+      );
+
+      emitToCallParticipants(
+        io,
+        call,
+        'call_ended',
+        {
+          reason:
+            'timeout',
+
+          status:
+            'missed',
+
+          duration: 0,
+        }
+      );
+
+      return res.json({
+        received: true,
+      });
+    }
+
+    /**
+     * -----------------------------------------------------
+     * call.ended
+     * -----------------------------------------------------
+     *
+     * Covers any remaining path where the Stream call
+     * ends while our call is still 'ringing' (e.g. the
+     * caller cancelled through the native SDK) or still
+     * 'accepted' (a participant hung up through the
+     * native screen without hitting the API).
+     */
+    if (
+      eventType ===
+        'call.ended' &&
+      (call.status ===
+        'ringing' ||
+        call.status ===
+          'accepted')
+    ) {
+      const wasAccepted =
+        call.status ===
+        'accepted';
+
+      call.status =
+        wasAccepted
+          ? 'ended'
+          : 'missed';
+
+      call.rejectReason =
+        wasAccepted
+          ? 'ended'
+          : 'timeout';
+
+      call.endedAt =
+        endedAt;
+
+      call.duration =
+        wasAccepted &&
+        call.startedAt
+          ? Math.max(
+              0,
+              Math.round(
+                (
+                  endedAt.getTime() -
+                  new Date(
+                    call.startedAt
+                  ).getTime()
+                ) /
+                  1000
+              )
+            )
+          : 0;
+
+      await call.save();
+
+      console.log(
+        'STREAM WEBHOOK: Call ended:',
+        {
+          callId:
+            call._id.toString(),
+
+          status:
+            call.status,
+
+          duration:
+            call.duration,
+        }
+      );
+
+      await createCallStatusMessage(
+        call,
+        io
+      );
+
+      emitToCallParticipants(
+        io,
+        call,
+        'call_ended',
+        {
+          reason:
+            wasAccepted
+              ? 'ended'
+              : 'timeout',
+
+          status:
+            call.status,
+
+          duration:
+            call.duration ||
+            0,
+        }
+      );
+
+      return res.json({
+        received: true,
+      });
+    }
+
+    /**
+     * Nothing to do (already terminal or an
+     * unrelated event type).
+     */
+    return res.json({
+      received: true,
+    });
+  } catch (error) {
+    /**
+     * Always answer 200 so Stream does not
+     * retry-storm the endpoint. The error is
+     * logged for debugging.
+     */
+    console.error(
+      'STREAM WEBHOOK ERROR:',
+      error?.message || error
+    );
+
+    return res.json({
+      received: true,
+    });
+  }
+};
+
+/**
+ * =========================================================
  * EXPORT
  * =========================================================
  */
@@ -1750,4 +2317,5 @@ module.exports = {
   acceptCall,
   rejectCall,
   endCall,
+  streamWebhook,
 };

@@ -126,7 +126,19 @@ app.options('/{*corsPreflight}', cors());
 
 // 3. THEN: Add your other middleware
 app.use(logger('dev'));
-app.use(express.json());
+
+/**
+ * Keep the raw request payload on `req.rawBody`
+ * so webhook signatures (e.g. the Stream call
+ * webhook) can be verified with HMAC.
+ */
+app.use(
+  express.json({
+    verify: (req, res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
