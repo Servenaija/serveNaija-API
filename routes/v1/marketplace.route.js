@@ -6,12 +6,16 @@ const validate = require('../../middlewares/validate');
 const mp = require('../../controllers/marketplace.controller');
 const mpValidation = require('../../validations/marketplace.validation');
 const { uploadMultiple } = require('../../middlewares/upload');
+const cache = require('../../utils/cache');
 const router = express.Router();
 router.use(allowedMethod);
 
+// Bust marketplace + public caches after any successful write (store/product/order/review changes)
+router.use(cache.invalidateOnWrite(['/v1.0/marketplace', '/v1.0/public']));
+
 // ─── STORES ───────────────────────────────
 router.route('/stores')
-  .get(mp.listStores)
+  .get(cache.route({ expire: 60 }), mp.listStores)
   .all(unAllowedMethod);
 
 router.route('/stores/create')
@@ -23,7 +27,7 @@ router.route('/stores/me')
   .all(unAllowedMethod);
 
 router.route('/stores/:storeId')
-  .get(mp.getStore)
+  .get(cache.route({ expire: 60 }), mp.getStore)
   .put(verifyToken, validate(mpValidation.updateStore), mp.updateStore)
   .all(unAllowedMethod);
 
@@ -32,11 +36,11 @@ router.route('/stores/:storeId/stats')
   .all(unAllowedMethod);
 
 router.route('/stores/:storeId/products')
-  .get(mp.getStoreProducts)
+  .get(cache.route({ expire: 60 }), mp.getStoreProducts)
   .all(unAllowedMethod);
 
 router.route('/stores/:storeId/reviews')
-  .get(mp.getTargetReviews)
+  .get(cache.route({ expire: 60 }), mp.getTargetReviews)
   .all(unAllowedMethod);
 
 // ─── PRODUCTS ─────────────────────────────
@@ -45,26 +49,26 @@ router.route('/products/create')
   .all(unAllowedMethod);
 
 router.route('/products/:productId')
-  .get(mp.getProduct)
+  .get(cache.route({ expire: 60 }), mp.getProduct)
   .put(verifyToken, validate(mpValidation.updateProduct), uploadMultiple, mp.updateProduct)
   .delete(verifyToken, mp.deleteProduct)
   .all(unAllowedMethod);
 
 router.route('/products/:productId/reviews')
-  .get(mp.getTargetReviews)
+  .get(cache.route({ expire: 60 }), mp.getTargetReviews)
   .all(unAllowedMethod);
 
 // ─── DISCOVERY ───────────────────────────
 router.route('/search')
-  .get(mp.searchProducts)
+  .get(cache.route({ expire: 30 }), mp.searchProducts)
   .all(unAllowedMethod);
 
 router.route('/featured')
-  .get(mp.getFeaturedProducts)
+  .get(cache.route({ expire: 120 }), mp.getFeaturedProducts)
   .all(unAllowedMethod);
 
 router.route('/trending')
-  .get(mp.getTrendingProducts)
+  .get(cache.route({ expire: 120 }), mp.getTrendingProducts)
   .all(unAllowedMethod);
 
 // ─── ORDERS ───────────────────────────────
@@ -98,7 +102,7 @@ router.route('/reviews/create')
   .all(unAllowedMethod);
 
 router.route('/reviews/:targetId')
-  .get(mp.getTargetReviews)
+  .get(cache.route({ expire: 60 }), mp.getTargetReviews)
   .all(unAllowedMethod);
 
 module.exports = router;

@@ -22,5 +22,7 @@ const walletSchema = new mongoose.Schema(
 );
 
 walletSchema.index({ owner: 1 });
+walletSchema.index({ ownerType: 1, isActive: 1 });   // owner-type queries
+walletSchema.index({ updatedAt: -1 });               // recently active wallets
 
 module.exports = mongoose.model('Wallet', walletSchema);

@@ -60,8 +60,9 @@ router.route('/membership/has')
 router.route('/reactive')
   .post(customerController.reactivateAccount)
   .all(unAllowedMethod);
-router.route('/deactive')
 
+
+router.route('/deactive')
   .post(verifyToken, customerController.deactivateAccount)
   .all(unAllowedMethod);
 

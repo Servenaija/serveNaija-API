@@ -22,6 +22,7 @@ const publicRoutes = require('./public.routes');
 const customerRoute = require('./customer.route');
 const streamRoute = require('./stream.route');
 const reviewRoute = require('./review.routes');
+const contactRoute = require('./contact.route');
 
 
 const router = express.Router();
@@ -48,6 +49,7 @@ const defaultRoutes = [
   { path: '/wallet', route: walletRoute },
   { path: '/marketplace', route: marketplaceRoute },
   { path: '/agent', route: agentRoute },
+  { path: '/contact', route: contactRoute },
 ];
 
 defaultRoutes.forEach((route) => {

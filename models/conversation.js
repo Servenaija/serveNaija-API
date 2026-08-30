@@ -45,6 +45,9 @@ const conversationSchema = new mongoose.Schema(
 );
 
 conversationSchema.index({ 'participants.userId': 1 });
+conversationSchema.index({ 'participants.userId': 1, updatedAt: -1 }); // participant inbox, newest first
 conversationSchema.index({ updatedAt: -1 });
+conversationSchema.index({ isActive: 1, updatedAt: -1 });              // active conversations
+conversationSchema.index({ booking: 1 }, { sparse: true });            // booking-linked chats
 
 module.exports = mongoose.model('Conversation', conversationSchema);

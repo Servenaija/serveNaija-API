@@ -46,5 +46,9 @@ const kycSchema = new mongoose.Schema(
 
 kycSchema.index({ userId: 1 });
 kycSchema.index({ status: 1, createdAt: -1 });
+kycSchema.index({ userType: 1, status: 1, createdAt: -1 });       // per-user-type queues
+kycSchema.index({ dojahJobId: 1 }, { sparse: true });             // Dojah webhook lookups
+kycSchema.index({ dojahRequestId: 1 }, { sparse: true });         // Dojah request tracking
+kycSchema.index({ reviewedBy: 1 }, { sparse: true });             // reviewer workload queries
 
 module.exports = mongoose.model('KYC', kycSchema);

@@ -25,5 +25,10 @@ productSchema.index({ store: 1, category: 1, isActive: 1 });
 productSchema.index({ name: 'text', description: 'text' });
 productSchema.index({ rating: -1 });
 productSchema.index({ soldCount: -1 });
+productSchema.index({ provider: 1, createdAt: -1 });              // provider's products
+productSchema.index({ store: 1, createdAt: -1 });                 // store listings
+productSchema.index({ category: 1, isActive: 1, soldCount: -1 }); // trending per category
+productSchema.index({ price: 1 });                                // price sorting/filtering
+productSchema.index({ isActive: 1, createdAt: -1 });              // newest active products
 
 module.exports = mongoose.model('Product', productSchema);

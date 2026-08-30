@@ -18,4 +18,9 @@ const storeSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+storeSchema.index({ isActive: 1, category: 1, rating: -1 });   // public store listing w/ filters
+storeSchema.index({ isActive: 1, createdAt: -1 });             // newest stores
+storeSchema.index({ name: 1 });                                 // name lookup/sort
+storeSchema.index({ rating: -1, reviewCount: -1 });             // top-rated stores
+
 module.exports = mongoose.model('Store', storeSchema);

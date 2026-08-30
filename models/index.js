@@ -27,6 +27,7 @@ const category = require('./category');
 const promotion = require('./promotion');
 const SupportTicket = require('./SupportTicket');
 const calls = require('./call');
+const contact = require('./contact');
 
 
 mongoose.set('strictQuery', false);
@@ -79,6 +80,7 @@ dB.promotions = promotion;
 dB.calls = call;
 dB.kyc = kyc;
 dB.SupportTickets = SupportTicket;
+dB.contacts = contact;
 
 module.exports = {
   dB,

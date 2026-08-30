@@ -8,7 +8,6 @@ const { authLimiter } = require('../../middlewares/rateLimiter');
 const { allowedMethod } = require('../../middlewares/headers');
 const config = require('../../config/auth');
 const { unAllowedMethod } = require('../../middlewares/method');
-const cache = require('../../utils/cache');
 
 const router = express.Router();
 
@@ -32,9 +31,9 @@ router.route('/login/provider')
     .post(allowedMethod, validate(authValidation.login), authController.loginProvider)
     .all(unAllowedMethod)
 
-// Logout - WITH CACHE (clear cache on logout)
+// Logout - NO CACHE (write operation; cache middleware only serves GETs anyway)
 router.route('/logout')
-    .post(cache.route(), allowedMethod, validate(authValidation.logout), authController.logout)
+    .post(allowedMethod, validate(authValidation.logout), authController.logout)
     .all(unAllowedMethod)
 
 // Refresh tokens - NO CACHE (real-time token operations)

@@ -50,5 +50,9 @@ const orderSchema = new mongoose.Schema(
 orderSchema.index({ buyer: 1, status: 1, createdAt: -1 });
 orderSchema.index({ store: 1, status: 1, createdAt: -1 });
 orderSchema.index({ paystackReference: 1 }, { sparse: true });
+orderSchema.index({ status: 1, createdAt: -1 });               // global status filtering
+orderSchema.index({ paymentStatus: 1, createdAt: -1 });        // payment reconciliation
+orderSchema.index({ store: 1, createdAt: -1 });                // seller listings
+orderSchema.index({ createdAt: -1 });                          // admin dashboards
 
 module.exports = mongoose.model('Order', orderSchema);

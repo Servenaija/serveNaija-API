@@ -102,6 +102,17 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
 
+// Hourly — remove cache entries that haven't been accessed in a long time
+cron.schedule('15 * * * *', async () => {
+  try {
+    const cache = require('./utils/cache');
+    const removed = await cache.sweepStale();
+    if (removed > 0) console.log(`[cron] Removed ${removed} stale cache key(s).`);
+  } catch (err) {
+    console.error('[cron] Cache sweep error:', err.message);
+  }
+});
+
 app.set('etag', false);
 app.set('trust proxy', false);
 

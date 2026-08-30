@@ -35,5 +35,6 @@ const categorySchema = new mongoose.Schema(
 );
 
 categorySchema.index({ name: 1, isActive: 1 });
+categorySchema.index({ isActive: 1, createdAt: -1 });   // active categories, newest first
 
 module.exports = mongoose.model('Category', categorySchema);

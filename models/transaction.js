@@ -34,7 +34,12 @@ const transactionSchema = new mongoose.Schema(
 
 transactionSchema.index({ owner: 1, type: 1, createdAt: -1 });
 transactionSchema.index({ owner: 1, status: 1, createdAt: -1 });     // filter by status
+transactionSchema.index({ owner: 1, createdAt: -1 });                // owner history
+transactionSchema.index({ wallet: 1, createdAt: -1 });               // per-wallet ledger
 transactionSchema.index({ booking: 1 }, { sparse: true });            // lookup by booking
+transactionSchema.index({ order: 1 }, { sparse: true });              // lookup by order
+transactionSchema.index({ status: 1, createdAt: -1 });                // global status views
+transactionSchema.index({ createdAt: -1 });                           // admin dashboards
 transactionSchema.index({ reference: 1 }, { unique: true, sparse: true });
 
 module.exports = mongoose.model('Transaction', transactionSchema);

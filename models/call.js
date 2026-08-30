@@ -80,6 +80,15 @@ const callSchema = new mongoose.Schema(
   }
 );
 
+// ============================================
+// INDEXES
+// ============================================
+callSchema.index({ initiator: 1, createdAt: -1 });          // outgoing call history
+callSchema.index({ recipient: 1, createdAt: -1 });          // incoming call history
+callSchema.index({ status: 1, createdAt: -1 });             // status filtering
+callSchema.index({ conversation: 1 }, { sparse: true });    // calls within a conversation
+callSchema.index({ streamCallId: 1 }, { sparse: true });    // Stream webhook lookups
+
 module.exports =
   mongoose.model(
     'Call',

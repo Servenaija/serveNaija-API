@@ -48,4 +48,13 @@ const promotionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// ============================================
+// INDEXES
+// ============================================
+promotionSchema.index({ provider: 1, status: 1, endDate: -1 });  // provider's promo history
+promotionSchema.index({ status: 1, endDate: 1 });                // cron expiry scan
+promotionSchema.index({ plan: 1, status: 1, type: 1 });          // plan/type filtering
+promotionSchema.index({ startDate: 1, endDate: 1 });             // active-window queries
+promotionSchema.index({ paystackReference: 1 }, { sparse: true }); // payment reconciliation
+
 module.exports = mongoose.model('Promotion', promotionSchema);

@@ -33,7 +33,9 @@ const supportTicketSchema = new mongoose.Schema(
 );
 
 supportTicketSchema.index({ 'user.userId': 1, status: 1 });
+supportTicketSchema.index({ 'user.userId': 1, lastMessageAt: -1 }); // user inbox, newest first
 supportTicketSchema.index({ assignedTo: 1, status: 1 });
 supportTicketSchema.index({ status: 1, lastMessageAt: -1 });
+supportTicketSchema.index({ createdAt: -1 });                        // admin dashboards
 
 module.exports = mongoose.model('SupportTicket', supportTicketSchema);

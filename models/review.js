@@ -31,6 +31,8 @@ const reviewSchema = new mongoose.Schema(
 );
 
 reviewSchema.index({ target: 1, targetType: 1, createdAt: -1 });
+reviewSchema.index({ targetType: 1, overall: -1 });                   // top-rated by type
+reviewSchema.index({ reviewer: 1, createdAt: -1 });                   // reviewer history
 // Prevent one user from leaving two reviews for the same booking
 reviewSchema.index({ reviewer: 1, booking: 1 }, { sparse: true, unique: true });
 

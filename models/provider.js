@@ -338,4 +338,9 @@ providerSchema.index({
   'subscription.isActive': 1,
 });
 
+// Name lookups and admin dashboards
+providerSchema.index({ fullName: 1 });
+providerSchema.index({ isDeleted: 1, isDeactivated: 1, createdAt: -1 });
+providerSchema.index({ updatedAt: -1 });
+
 module.exports = mongoose.model('Provider', providerSchema);

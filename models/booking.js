@@ -117,5 +117,8 @@ bookingSchema.index({ customer: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ provider: 1, status: 1, createdAt: -1 });
 bookingSchema.index({ status: 1, createdAt: -1 });
 bookingSchema.index({ paystackReference: 1 }, { sparse: true });
+bookingSchema.index({ 'service.category': 1, status: 1, createdAt: -1 }); // category job feeds
+bookingSchema.index({ scheduledDate: 1, status: 1 });                      // upcoming schedules
+bookingSchema.index({ paymentStatus: 1, createdAt: -1 });                  // escrow/release scans
 
 module.exports = mongoose.model('Booking', bookingSchema);

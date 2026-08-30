@@ -47,5 +47,11 @@ const withdrawalSchema = new mongoose.Schema(
 withdrawalSchema.index({ customer: 1, status: 1 });
 withdrawalSchema.index({ provider: 1, status: 1 });
 withdrawalSchema.index({ reference: 1 }, { unique: true });
+withdrawalSchema.index({ customer: 1, requestedAt: -1 });        // customer history
+withdrawalSchema.index({ provider: 1, requestedAt: -1 });        // provider history
+withdrawalSchema.index({ status: 1, requestedAt: 1 });           // pending queue processing
+withdrawalSchema.index({ approved: 1, requestedAt: 1 });         // approval queue
+withdrawalSchema.index({ transferReference: 1 }, { sparse: true }); // Paystack transfer lookups
+withdrawalSchema.index({ createdAt: -1 });                        // admin dashboards
 
 module.exports = mongoose.model('Withdrawal', withdrawalSchema);
