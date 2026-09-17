@@ -96,6 +96,9 @@ const createBooking = catchAsync(async (req, res) => {
     timeSlot,
     additionalNotes,
     paymentMethod,
+    transactionReference,
+    paystackReference: paystackReferenceBody,
+    reference,
   } = req.body;
 
   // Use the parsed address data
@@ -185,7 +188,11 @@ const createBooking = catchAsync(async (req, res) => {
 
   // Handle payment
   let paymentStatus = 'pending';
-  let paystackReference = null;
+  // Paystack reference supplied by the client AFTER a successful Paystack popup.
+  // The validate middleware REJECTS unknown fields, so these are whitelisted
+  // in booking.validation.js; accept all alias names here.
+  let paystackReference =
+    paystackReferenceBody || transactionReference || reference || null;
   let wallet = null;
   let transaction = null;
 
@@ -237,6 +244,16 @@ const createBooking = catchAsync(async (req, res) => {
   const booking = await dB.bookings.create(bookingData);
 
   // ✅ Now handle payment after booking is created
+  if (paymentMethod === 'paystack' || paymentMethod === 'card') {
+    // Client already charged via Paystack popup BEFORE calling this endpoint.
+    // Record the reference (already extracted above) so provider/admin can see it.
+    if (paystackReference) {
+      booking.paystackReference = paystackReference;
+      await booking.save();
+      console.log(`[Payment] Customer ${req.user._id} paid via Paystack (ref: ${paystackReference}) for booking ${booking._id}`);
+    }
+  }
+
   if (paymentMethod === 'wallet') {
     // Get customer's wallet
     wallet = await Wallet.findOne({ owner: req.user._id.toString() });
@@ -301,6 +318,19 @@ const createBooking = catchAsync(async (req, res) => {
 
   // Log successful creation
   console.log(`[Booking] Created booking ${booking._id} for customer ${req.user._id}`);
+
+  // ── Referral bonus: if this is the customer's FIRST order and they were
+  // referred by an agent, deposit ₦1,500 into the agent's AGENT wallet.
+  // Never blocks or breaks the booking. ──
+  try {
+    const referralService = require('../services/referral.service');
+    const referralResult = await referralService.payFirstOrderReferralBonus(req.user._id.toString());
+    if (referralResult?.paid) {
+      console.log(`[Booking] Referral bonus of ₦${referralResult.amount} paid to agent ${referralResult.agentCode} for customer ${req.user._id}'s first order.`);
+    }
+  } catch (referralError) {
+    console.error('[Booking] Referral bonus failed (booking unaffected):', referralError.message);
+  }
 
   // Notify provider of new booking
   notificationService.sendPushNotification({

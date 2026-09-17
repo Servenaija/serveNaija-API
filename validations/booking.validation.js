@@ -33,6 +33,9 @@ const createBooking = {
     }),
     additionalNotes: Joi.string().trim().max(500).optional().allow(''),
     paymentMethod: Joi.string().valid('wallet', 'paystack', 'card').optional(),
+    transactionReference: Joi.string().trim().optional().allow('', null),
+    paystackReference: Joi.string().trim().optional().allow('', null),
+    reference: Joi.string().trim().optional().allow('', null),
      photos: Joi.alternatives().try(
       Joi.array().items(Joi.string()),
       Joi.array().items(Joi.object())

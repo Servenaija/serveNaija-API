@@ -24,7 +24,7 @@ const PLAN_PRICES = {
   enterprise: 250000,
 };
 
-const REGISTRATION_FEE = 10000;
+// No extra registration fee — customers pay the plan price; Paystack charges are borne by the customer.
 
 // Helper function to verify Paystack transaction
 
@@ -451,17 +451,21 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found');
   }
 
-  const totalAmount = REGISTRATION_FEE + PLAN_PRICES[selectedPlan];
+  const totalAmount = PLAN_PRICES[selectedPlan];
 
   const verification = await verifyTransaction(paystackReference);
   if (verification.status !== 'success') {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Payment verification failed');
   }
 
-  if (Math.abs(verification.amount - totalAmount) > 10) {
+  // Customers pay Paystack charges on top of the price, so the amount Paystack
+  // receives is the plan price + the Paystack fee (1.5% + ₦100, capped ₦2,000).
+  // Accept anything from the base price up to base + the applicable fee.
+  const paystackFee = Math.min(Math.round(totalAmount * 0.015) + 100, 2000);
+  if (verification.amount < totalAmount || verification.amount > totalAmount + paystackFee) {
     throw new ApiError(
       httpStatus.BAD_REQUEST,
-      `Expected payment of ₦${totalAmount.toLocaleString()}. Got ₦${verification.amount.toLocaleString()}`
+      `Expected payment of ₦${totalAmount.toLocaleString()} (up to ₦${(totalAmount + paystackFee).toLocaleString()} with Paystack charges). Got ₦${verification.amount.toLocaleString()}`
     );
   }
 
@@ -524,12 +528,11 @@ const completeBusinessOnboarding = catchAsync(async (req, res) => {
     amount: totalAmount,
     balanceBefore: wallet.balance,
     balanceAfter: wallet.balance, // Balance doesn't change since payment is direct
-    description: `Business registration (${selectedPlan} plan) with registration fee`,
+    description: `Business registration (${selectedPlan} plan)`,
     reference: paystackReference,
     status: 'success',
     metadata: {
       plan: selectedPlan,
-      registrationFee: REGISTRATION_FEE,
       agentCode: agentCode,
       commission: commissionAmount,
       paymentMethod: 'paystack',

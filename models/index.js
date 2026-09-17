@@ -28,6 +28,9 @@ const promotion = require('./promotion');
 const SupportTicket = require('./SupportTicket');
 const calls = require('./call');
 const contact = require('./contact');
+const dispute = require('./dispute');
+const teamMember = require('./teamMember');
+const activityLog = require('./activityLog');
 
 
 mongoose.set('strictQuery', false);
@@ -81,6 +84,9 @@ dB.calls = call;
 dB.kyc = kyc;
 dB.SupportTickets = SupportTicket;
 dB.contacts = contact;
+dB.disputes = dispute;
+dB.teamMembers = teamMember;
+dB.activityLogs = activityLog;
 
 module.exports = {
   dB,

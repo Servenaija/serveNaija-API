@@ -107,6 +107,120 @@ const createTicket = catchAsync(async (req, res) => {
   });
 });
 
+// Report a user (provider/business) — creates a support ticket flagged as a report
+const reportUser = catchAsync(async (req, res) => {
+  const { reportedUserId, reason, description } = req.body;
+
+  if (!reportedUserId) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Reported user ID is required');
+  }
+  if (!reason) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Report reason is required');
+  }
+
+  const reporterId = req.user._id.toString();
+  if (reportedUserId === reporterId) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'You cannot report yourself');
+  }
+
+  // Verify the reported user exists (provider or customer)
+  const reportedUser = await dB.providers.findById(reportedUserId).lean()
+    || await dB.customers.findById(reportedUserId).lean();
+  if (!reportedUser) {
+    throw new ApiError(httpStatus.NOT_FOUND, 'Reported user not found');
+  }
+
+  const reporterName = req.user.fullName || req.user.firstName || 'User';
+  const reporterEmail = req.user.email;
+  const reporterType = req.user.constructor.modelName === 'Provider' ? 'provider' : 'customer';
+
+  const subject = `Report: ${reason}`;
+  const message = `Report against user ${reportedUserId} (${reportedUser.fullName || reportedUser.email || 'Unknown'})\nReason: ${reason}\n${description ? `Details: ${description}` : ''}`;
+
+  // Check for existing open report ticket by this reporter against this user
+  const existingTicket = await SupportTicket.findOne({
+    'user.userId': reporterId,
+    'report.reportedUserId': reportedUserId,
+    status: { $in: ['open', 'in-progress'] },
+  });
+
+  if (existingTicket) {
+    existingTicket.messages.push({
+      senderId: reporterId,
+      senderType: 'user',
+      senderName: reporterName,
+      text: message,
+      createdAt: new Date(),
+      readBy: [reporterId],
+    });
+    existingTicket.lastMessageAt = new Date();
+    existingTicket.unreadCount += 1;
+    await existingTicket.save();
+
+    return res.status(200).json({
+      success: true,
+      message: 'Report added to existing ticket',
+      data: { ticket: existingTicket },
+    });
+  }
+
+  const ticket = await SupportTicket.create({
+    user: {
+      userId: reporterId,
+      userType: reporterType,
+      name: reporterName,
+      email: reporterEmail,
+    },
+    subject,
+    messages: [
+      {
+        senderId: reporterId,
+        senderType: 'user',
+        senderName: reporterName,
+        text: message,
+        createdAt: new Date(),
+        readBy: [reporterId],
+      },
+    ],
+    status: 'open',
+    lastMessageAt: new Date(),
+    unreadCount: 1,
+    report: {
+      reportedUserId,
+      reason,
+      description: description || '',
+    },
+  });
+
+  // Emit socket event to admin
+  const io = req.app.get('io');
+  if (io) {
+    io.to('admin_support').emit('new_ticket', {
+      ticketId: ticket._id.toString(),
+      user: ticket.user,
+      subject: ticket.subject,
+      createdAt: ticket.createdAt,
+      isReport: true,
+    });
+  }
+
+  // Notify admins
+  notificationService.sendPushNotification({
+    userId: 'admin',
+    actorType: 'admin',
+    title: 'New User Report',
+    body: `${reporterName}: ${reason}`,
+    type: 'support',
+    data: { ticketId: ticket._id.toString(), isReport: true },
+  }).catch(() => {});
+
+  res.status(httpStatus.CREATED).json({
+    success: true,
+    message: 'Report submitted. A ServeNaija admin will review it.',
+    data: { ticket },
+  });
+});
+
 // Get user's tickets
 const getUserTickets = catchAsync(async (req, res) => {
   const userId = req.user._id.toString();
@@ -547,4 +661,5 @@ module.exports = {
   sendAdminMessage,
   resolveTicket,
   adminCloseTicket,
+  reportUser,
 };

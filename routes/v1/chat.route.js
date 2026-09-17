@@ -4,30 +4,31 @@ const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
 const chatController = require('../../controllers/chat.controller');
 const { uploadSingle } = require('../../middlewares/upload');
+const { teamPermission, logTeamActivity } = require('../../middlewares/team');
 
 const router = express.Router();
 router.use(allowedMethod);
 
-// Conversations
+// Conversations (team members need the 'chat' permission)
 router.route('/conversations')
-  .get(verifyToken, chatController.listConversations)
-  .post(verifyToken, chatController.createOrGetConversation)
+  .get(verifyToken, teamPermission('chat'), chatController.listConversations)
+  .post(verifyToken, teamPermission('chat'), chatController.createOrGetConversation)
   .all(unAllowedMethod);
 
 router.route('/conversations/:id')
-  .get(verifyToken, chatController.getConversation)
-  .delete(verifyToken, chatController.deleteConversation)
+  .get(verifyToken, teamPermission('chat'), chatController.getConversation)
+  .delete(verifyToken, teamPermission('chat'), chatController.deleteConversation)
   .all(unAllowedMethod);
 
 // Messages
 router.route('/conversations/:id/messages')
-  .get(verifyToken, chatController.listMessages)
-  .post(verifyToken, chatController.sendMessage)
+  .get(verifyToken, teamPermission('chat'), chatController.listMessages)
+  .post(verifyToken, teamPermission('chat'), logTeamActivity('chat.message', 'conversation'), chatController.sendMessage)
   .all(unAllowedMethod);
 
 // Image message — multipart upload
 router.route('/conversations/:id/messages/image')
-  .post(verifyToken, uploadSingle, chatController.sendImageMessage)
+  .post(verifyToken, teamPermission('chat'), logTeamActivity('chat.message', 'conversation'), uploadSingle, chatController.sendImageMessage)
   .all(unAllowedMethod);
 
 // Inbound webhook for external chat events

@@ -343,4 +343,52 @@ providerSchema.index({ fullName: 1 });
 providerSchema.index({ isDeleted: 1, isDeactivated: 1, createdAt: -1 });
 providerSchema.index({ updatedAt: -1 });
 
+// ============================================
+// WALLET METHODS (mirror Customer model)
+// ============================================
+
+providerSchema.methods.getWallet = async function () {
+  const Wallet = mongoose.model('Wallet');
+  const wallet = await Wallet.findOne({ owner: this._id.toString() });
+  if (wallet) return wallet;
+  const created = await Wallet.create({
+    owner: this._id.toString(),
+    ownerType: 'provider',
+  });
+  return created;
+};
+
+providerSchema.methods.updateWalletBalance = async function (amount, type, description, reference, metadata = {}) {
+  const wallet = await this.getWallet();
+  const Transaction = mongoose.model('Transaction');
+
+  const balanceBefore = wallet.balance;
+  let balanceAfter = balanceBefore;
+
+  if (type === 'credit') {
+    balanceAfter = balanceBefore + amount;
+  } else if (type === 'debit' || type === 'withdrawal') {
+    balanceAfter = balanceBefore - amount;
+  }
+
+  wallet.balance = balanceAfter;
+  await wallet.save();
+
+  const transaction = await Transaction.create({
+    wallet: wallet._id,
+    owner: this._id.toString(),
+    type: type,
+    amount: amount,
+    balanceBefore: balanceBefore,
+    balanceAfter: balanceAfter,
+    currency: wallet.currency,
+    description: description,
+    reference: reference,
+    status: 'success',
+    metadata: metadata,
+  });
+
+  return { wallet, transaction };
+};
+
 module.exports = mongoose.model('Provider', providerSchema);

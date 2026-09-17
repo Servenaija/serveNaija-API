@@ -2,6 +2,7 @@ const express = require('express');
 const { verifyToken } = require('../../middlewares/verify');
 const { allowedMethod } = require('../../middlewares/headers');
 const { unAllowedMethod } = require('../../middlewares/method');
+const { teamPermission, logTeamActivity } = require('../../middlewares/team');
 const validate = require('../../middlewares/validate');
 const providerController = require('../../controllers/provider.controller');
 const providerValidation = require('../../validations/provider.validation');
@@ -48,12 +49,12 @@ router.route('/bank-details')
 // Services (provider's service offerings)
 router.route('/services')
   .get(verifyToken, providerController.listServices)
-  .post(verifyToken, validate(providerValidation.addService), providerController.addService)
+  .post(verifyToken, teamPermission('createService'), logTeamActivity('service.create', 'service'), validate(providerValidation.addService), providerController.addService)
   .all(unAllowedMethod);
 
 router.route('/services/:id')
-  .put(verifyToken, validate(providerValidation.updateService), providerController.updateService)
-  .delete(verifyToken, providerController.deleteService)
+  .put(verifyToken, teamPermission('createService'), logTeamActivity('service.update', 'service'), validate(providerValidation.updateService), providerController.updateService)
+  .delete(verifyToken, teamPermission('createService'), logTeamActivity('service.delete', 'service'), providerController.deleteService)
   .all(unAllowedMethod);
 
 // Dashboard stats
@@ -91,6 +92,61 @@ router.route('/subscription/activate')
 
 router.route('/subscription/upgrade')
   .post(verifyToken, (req, res, next) => { req.body.isUpgrade = true; next(); }, providerController.manageSubscription)
+  .all(unAllowedMethod);
+
+  // ─── ENTERPRISE TEAM MANAGEMENT (Premium/Enterprise only) ───
+  // NOTE: these MUST be registered BEFORE the '/:providerId' public routes
+  // below, otherwise Express matches e.g. 'team-members' as :providerId.
+  // Get team members / Add a team member (employee sub-account)
+  // NOTE: GET + POST must live on ONE router.route() chain — a second
+  // router.route('/team-members') never runs because .all(unAllowedMethod)
+  // on the first one catches every other method first (405).
+router.route('/team-members')
+  .get(verifyToken, providerController.listTeamMembers)
+  .post(verifyToken, providerController.addTeamMember)
+  .all(unAllowedMethod);
+
+// Assign team member to customers
+router.route('/team-members/:id/assign')
+  .put(verifyToken, providerController.assignTeamMember)
+  .all(unAllowedMethod);
+
+// Remove team member
+router.route('/team-members/:id')
+  .delete(verifyToken, providerController.removeTeamMember)
+  .all(unAllowedMethod);
+
+// Update what a member can see/do (wallet, promote, jobs, marketplace,
+// create service, chat)
+router.route('/team-members/:id/permissions')
+  .put(verifyToken, providerController.updateTeamMemberPermissions)
+  .all(unAllowedMethod);
+
+// Assign a member to specific jobs (bookings)
+router.route('/team-members/:id/assign-jobs')
+  .put(verifyToken, providerController.assignTeamMemberJobs)
+  .all(unAllowedMethod);
+
+// Owner reviews everything a member did since their account was created
+// (including the customers they chatted with)
+router.route('/team-members/:id/activity')
+  .get(verifyToken, providerController.getTeamMemberActivity)
+  .all(unAllowedMethod);
+
+// Owner resets a member's password (returns the NEW password once so the
+// owner can see it and share it with the employee)
+router.route('/team-members/:id/reset-password')
+  .post(verifyToken, providerController.resetTeamMemberPassword)
+  .all(unAllowedMethod);
+
+// Owner toggles the "must reset password on first login" requirement
+router.route('/team-members/:id/password-policy')
+  .put(verifyToken, providerController.setTeamMemberPasswordPolicy)
+  .all(unAllowedMethod);
+
+// Owner deactivates/reactivates a member account (terminate / restore)
+router.route('/team-members/:id/status')
+  .put(verifyToken, providerController.setTeamMemberStatus)
   .all(unAllowedMethod);
 
   // ─── PUBLIC ROUTES ───

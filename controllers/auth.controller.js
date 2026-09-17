@@ -145,6 +145,118 @@ const loginUser = catchAsync(async (req, res) => {
   return res.send(response);
 });
 
+// ─── ENTERPRISE TEAM MEMBER AUTH ───
+// Employees log in with the email + password the business owner created
+// for them. The token carries actor 'teamMember' — every request then acts
+// inside the owner's business account, gated by the member's permissions.
+// When mustChangePassword is true, login returns 403 + mustChangePassword
+// so the app can force a first-login reset before issuing tokens.
+const teamLogin = catchAsync(async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(httpStatus.BAD_REQUEST).send({ message: 'Email and password are required.' });
+  }
+
+  const member = await dB.teamMembers.findOne({ email: String(email).toLowerCase().trim() });
+  if (!member || member.tempPassword !== password) {
+    return res.status(httpStatus.UNAUTHORIZED).send({ message: 'Incorrect email or password' });
+  }
+  if (member.status !== 'active') {
+    return res.status(httpStatus.FORBIDDEN).send({ message: 'This team account has been deactivated. Contact the business owner.' });
+  }
+
+  const owner = await Provider.findById(member.provider);
+  if (!owner) {
+    return res.status(httpStatus.NOT_FOUND).send({ message: 'Business account not found.' });
+  }
+
+  if (member.mustChangePassword) {
+    return res.status(httpStatus.FORBIDDEN).send({
+      message: 'You must set a new password before continuing.',
+      mustChangePassword: true,
+      memberId: member._id,
+    });
+  }
+
+  const id = member._id.toString();
+  const tokens = await tokenService.generateAuthTokens({ id, actor: 'teamMember' });
+
+  return res.send({
+    teamMember: {
+      id: member._id,
+      fullName: member.fullName,
+      email: member.email,
+      permissions: member.permissions,
+      providerId: member.provider,
+      businessName: owner.business?.businessName || owner.fullName || 'Business',
+    },
+    tokens,
+  });
+});
+
+// Team member sets their own new password on first login (or whenever the
+// owner forces a reset). No token needed — email + current temp password.
+const teamChangePassword = catchAsync(async (req, res) => {
+  const { email, currentPassword, newPassword } = req.body;
+  if (!email || !currentPassword || !newPassword) {
+    return res.status(httpStatus.BAD_REQUEST).send({ message: 'Email, current password and new password are required.' });
+  }
+  if (String(newPassword).length < 6) {
+    return res.status(httpStatus.BAD_REQUEST).send({ message: 'New password must be at least 6 characters.' });
+  }
+
+  const member = await dB.teamMembers.findOne({ email: String(email).toLowerCase().trim() });
+  if (!member || member.tempPassword !== currentPassword) {
+    return res.status(httpStatus.UNAUTHORIZED).send({ message: 'Incorrect email or password' });
+  }
+  if (member.status !== 'active') {
+    return res.status(httpStatus.FORBIDDEN).send({ message: 'This team account has been deactivated. Contact the business owner.' });
+  }
+
+  member.tempPassword = String(newPassword);
+  member.mustChangePassword = false;
+  await member.save();
+
+  const owner = await Provider.findById(member.provider);
+  const id = member._id.toString();
+  const tokens = await tokenService.generateAuthTokens({ id, actor: 'teamMember' });
+
+  return res.send({
+    teamMember: {
+      id: member._id,
+      fullName: member.fullName,
+      email: member.email,
+      permissions: member.permissions,
+      providerId: member.provider,
+      businessName: owner?.business?.businessName || owner?.fullName || 'Business',
+    },
+    tokens,
+  });
+});
+
+// Current team member session (used by the app to know the permissions)
+const teamMe = catchAsync(async (req, res) => {
+  if (!req.teamMember) {
+    return res.status(httpStatus.FORBIDDEN).send({ message: 'Not a team member session.' });
+  }
+  const m = req.teamMember;
+  return res.send({
+    teamMember: {
+      id: m._id,
+      fullName: m.fullName,
+      email: m.email,
+      phone: m.phone,
+      permissions: m.permissions,
+      customerIds: m.customerIds,
+      bookingIds: m.bookingIds,
+      status: m.status,
+      mustChangePassword: !!m.mustChangePassword,
+      providerId: m.provider,
+      businessName: req.user?.business?.businessName || req.user?.fullName || 'Business',
+    },
+  });
+});
+
 const loginProvider = catchAsync(async (req, res) => {
   const { email, password, expoPushToken } = req.body;
   const user = await authService.loginProviderWithEmailAndPassword(email, password);
@@ -290,6 +402,9 @@ module.exports = {
   registerProvider,
   loginUser,
   loginProvider,
+  teamLogin,
+  teamMe,
+  teamChangePassword,
   logout,
   refreshTokens,
   forgotPassword,

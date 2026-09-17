@@ -833,5 +833,279 @@ module.exports = {
   permanentDeleteDeactivatedAccounts,
   getProviderServices,
   getProviderProfilePublic,
-  getProviderReviews
+  getProviderReviews,
+
+  // ─── Enterprise team management ─────────────────────────────────────────
+  // listTeamMembers: GET /v1/provider/team-members
+  // addTeamMember:   POST /v1/provider/team-members
+  // assignTeamMember: PUT /v1/provider/team-members/:id/assign
+  // removeTeamMember: DELETE /v1/provider/team-members/:id
+  listTeamMembers: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+
+    // Only Premium/Enterprise plans can use team management. Business
+    // accounts with an active subscription always qualify; check is
+    // case-insensitive so 'Enterprise' also passes.
+    const selectedPlan = String(req.user.subscription?.selectedPlan || '').toLowerCase();
+    const accountType = String(req.user.accountType || '').toLowerCase();
+    const subscribed = req.user.subscription?.isActive !== false;
+    const isTeamPlan =
+      (accountType === 'business' && subscribed) ||
+      ['premium', 'enterprise'].includes(selectedPlan);
+    if (!isTeamPlan) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'Team management is only available on Premium/Enterprise plans.');
+    }
+
+    const members = await dB.teamMembers
+      .find({ provider: providerId })
+      .sort({ createdAt: -1 });
+
+    res.json({ members });
+  }),
+
+  addTeamMember: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { fullName, email, phone, customerIds } = req.body;
+
+    if (!fullName || !email) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'fullName and email are required.');
+    }
+
+    // Only Premium/Enterprise plans can use team management (same rule as list)
+    const selectedPlan = String(req.user.subscription?.selectedPlan || '').toLowerCase();
+    const accountType = String(req.user.accountType || '').toLowerCase();
+    const subscribed = req.user.subscription?.isActive !== false;
+    const isTeamPlan =
+      (accountType === 'business' && subscribed) ||
+      ['premium', 'enterprise'].includes(selectedPlan);
+    if (!isTeamPlan) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'Team management is only available on Premium/Enterprise plans.');
+    }
+
+    // Check if a provider with this email already exists
+    const existing = await dB.providers.findOne({ email: email.toLowerCase() });
+    if (existing && existing._id.toString() !== providerId.toString()) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'A provider with this email already exists.');
+    }
+
+    // Generate a temp password for the employee — the owner sees it and
+    // shares it with them (email + this password is how they log in).
+    const tempPassword = `ServeNaija_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+
+    // Create the employee as a sub-provider account
+    const member = await dB.teamMembers.create({
+      provider: providerId,
+      fullName,
+      email: email.toLowerCase(),
+      phone: phone || '',
+      tempPassword,
+      mustChangePassword: req.body.mustChangePassword !== false,
+      customerIds: customerIds || [],
+      permissions: {
+        wallet: false,
+        promote: false,
+        jobs: false,
+        marketplace: false,
+        createService: false,
+        chat: false,
+        ...(req.body.permissions || {}),
+      },
+      status: 'active',
+    });
+
+    res.status(httpStatus.CREATED).json({ member, tempPassword });
+  }),
+
+  // Owner updates what a member can see/do (wallet, promote, jobs, marketplace,
+  // create service, chat)
+  updateTeamMemberPermissions: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+    const { permissions } = req.body;
+
+    if (!permissions || typeof permissions !== 'object') {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'permissions object is required.');
+    }
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+
+    const allowed = ['wallet', 'promote', 'jobs', 'marketplace', 'createService', 'chat'];
+    for (const key of allowed) {
+      if (key in permissions) member.permissions[key] = Boolean(permissions[key]);
+    }
+    await member.save();
+
+    res.json({ member, message: 'Permissions updated.' });
+  }),
+
+  // Owner assigns the member to specific jobs (bookings)
+  assignTeamMemberJobs: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+    const { bookingIds } = req.body;
+
+    if (!Array.isArray(bookingIds)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'bookingIds must be an array of booking IDs.');
+    }
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+
+    member.bookingIds = bookingIds;
+    await member.save();
+
+    res.json({ member, message: 'Job assignments updated.' });
+  }),
+
+  // Owner resets a member's password — returns the NEW password once so the
+  // owner can see it and share it with the employee.
+  resetTeamMemberPassword: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+    const { mustChangePassword } = req.body || {};
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+
+    const tempPassword = `ServeNaija_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+    member.tempPassword = tempPassword;
+    if (typeof mustChangePassword === 'boolean') member.mustChangePassword = mustChangePassword;
+    await member.save();
+
+    res.json({ member, tempPassword, message: 'Password reset. Share the new password with the employee.' });
+  }),
+
+  // Owner flips the first-login reset requirement on/off for a member.
+  setTeamMemberPasswordPolicy: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+    const { mustChangePassword } = req.body || {};
+
+    if (typeof mustChangePassword !== 'boolean') {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'mustChangePassword (true/false) is required.');
+    }
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+
+    member.mustChangePassword = mustChangePassword;
+    await member.save();
+
+    res.json({ member, message: mustChangePassword ? 'Member must reset password on next login.' : 'First-login reset requirement removed.' });
+  }),
+
+  // Owner activates/deactivates a member account (terminate / restore access).
+  setTeamMemberStatus: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+    const { status } = req.body || {};
+
+    if (!['active', 'inactive'].includes(status)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, "status must be 'active' or 'inactive'.");
+    }
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+
+    member.status = status;
+    await member.save();
+
+    res.json({ member, message: status === 'active' ? 'Account reactivated.' : 'Account deactivated — they can no longer log in.' });
+  }),
+  // including which customers they chatted with and what they said.
+  // Owner reviews everything a member did since their account was created —
+  // including which customers they chatted with and what they said.
+  getTeamMemberActivity: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+
+    const logs = await dB.activityLogs
+      .find({ teamMember: member._id })
+      .sort({ createdAt: -1 })
+      .limit(300);
+
+    // Enrich chat actions with the customer they were chatting with
+    const activity = await Promise.all(
+      logs.map(async (log) => {
+        const entry = log.toObject ? log.toObject() : log;
+        if (entry.action === 'chat.message' && entry.meta?.conversationId) {
+          try {
+            const conv = await dB.conversations.findById(entry.meta.conversationId).lean();
+            if (conv) {
+              const customer = (conv.participants || []).find((p) => p.actorType === 'customer');
+              entry.customer = customer
+                ? { name: customer.name || 'Customer', userId: customer.userId }
+                : null;
+            }
+          } catch (_) { /* ignore */ }
+        }
+        return entry;
+      })
+    );
+
+    res.json({
+      member,
+      since: member.createdAt,
+      totalActions: logs.length,
+      activity,
+    });
+  }),
+
+  assignTeamMember: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+    const { customerIds } = req.body;
+
+    if (!Array.isArray(customerIds)) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'customerIds must be an array of provider IDs.');
+    }
+
+    // Same team-plan rule as list/add
+    const selectedPlan = String(req.user.subscription?.selectedPlan || '').toLowerCase();
+    const accountType = String(req.user.accountType || '').toLowerCase();
+    const subscribed = req.user.subscription?.isActive !== false;
+    const isTeamPlan =
+      (accountType === 'business' && subscribed) ||
+      ['premium', 'enterprise'].includes(selectedPlan);
+    if (!isTeamPlan) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'Team management is only available on Premium/Enterprise plans.');
+    }
+
+    const member = await dB.teamMembers.findOne({ _id: id, provider: providerId });
+    if (!member) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+    }
+
+    member.customerIds = customerIds;
+    await member.save();
+
+    res.json({ member });
+  }),
+
+  removeTeamMember: catchAsync(async (req, res) => {
+    const providerId = req.user._id;
+    const { id } = req.params;
+
+    // Same team-plan rule as list/add
+    const selectedPlan = String(req.user.subscription?.selectedPlan || '').toLowerCase();
+    const accountType = String(req.user.accountType || '').toLowerCase();
+    const subscribed = req.user.subscription?.isActive !== false;
+    const isTeamPlan =
+      (accountType === 'business' && subscribed) ||
+      ['premium', 'enterprise'].includes(selectedPlan);
+    if (!isTeamPlan) {
+      throw new ApiError(httpStatus.FORBIDDEN, 'Team management is only available on Premium/Enterprise plans.');
+    }
+
+    const member = await dB.teamMembers.findOneAndDelete({ _id: id, provider: providerId });
+    if (!member) {
+      throw new ApiError(httpStatus.NOT_FOUND, 'Team member not found.');
+    }
+
+    res.json({ message: 'Team member removed.' });
+  }),
 };

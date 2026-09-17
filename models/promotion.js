@@ -8,6 +8,8 @@ const promotionSchema = new mongoose.Schema(
       ref: 'Provider', 
       required: true 
     },
+    // State the ad/provider operates in (used for statewide reach)
+    state: { type: String, trim: true, default: null },
     plan: { 
       type: String, 
       enum: ['fp', 'hp', 'local', 'state', 'nation'],

@@ -64,12 +64,12 @@ const createOrder = {
       state: Joi.string().trim().optional().allow(''),
       city: Joi.string().trim().optional().allow(''),
     }).required(),
-    paymentMethod: Joi.string().valid('card', 'bank_transfer', 'cod', 'wallet').required(),
-    paystackReference: Joi.string().trim().when('paymentMethod', {
-      is: Joi.valid('card', 'bank_transfer'),
-      then: Joi.required(),
-      otherwise: Joi.optional().allow('', null),
-    }),
+    paymentMethod: Joi.string().valid('card', 'paystack', 'online', 'bank_transfer', 'transfer', 'cod', 'cash', 'wallet').required(),
+    // Reference may arrive under any of these alias names (clients differ).
+    // At least one is required for online payments.
+    paystackReference: Joi.string().trim().optional().allow('', null),
+    transactionReference: Joi.string().trim().optional().allow('', null),
+    reference: Joi.string().trim().optional().allow('', null),
   }),
 };
 

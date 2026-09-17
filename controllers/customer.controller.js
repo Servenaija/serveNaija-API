@@ -256,11 +256,15 @@ const fundWallet = catchAsync(async (req, res) => {
     
     const paystackAmount = verification.data.data.amount / 100;
     console.log('Amount comparison:', { expected: amount, got: paystackAmount });
-    
-    if (paystackAmount !== amount) {
+
+    // The customer pays the Paystack charges on top of the funded amount, so
+    // accept anything from the requested amount up to amount + the Paystack fee
+    // (1.5% + ₦100, capped ₦2,000). Only the requested amount is credited.
+    const paystackFee = Math.min(Math.round(amount * 0.015) + 100, 2000);
+    if (paystackAmount < amount || paystackAmount > amount + paystackFee) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
-        `Amount mismatch. Expected: ${amount}, Got: ${paystackAmount}`
+        `Amount mismatch. Expected: ${amount} (up to ${amount + paystackFee} with Paystack charges), Got: ${paystackAmount}`
       );
     }
     
@@ -680,9 +684,10 @@ const initializeMembership = catchAsync(async (req, res) => {
         throw new ApiError(httpStatus.BAD_REQUEST, 'Payment verification failed');
       }
       
-      // Check amount (₦2,000 = 200000 kobo)
-      if (Number(verificationData.data.amount) / 100 !== 2000) {
-        throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid payment amount. Expected ₦2,000');
+      // Check amount (₦2,000 plan price; customer may pay Paystack charges on top)
+      const paidNaira = Number(verificationData.data.amount) / 100;
+      if (paidNaira < 2000 || paidNaira > 4000) {
+        throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid payment amount. Expected ₦2,000 (plus Paystack charges)');
       }
       
       // Calculate expiry date (1 year from now)
@@ -786,8 +791,8 @@ const upgradeToPremium = catchAsync(async (req, res) => {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Payment verification failed');
     }
     
-    if (Number(verificationData.data.amount) / 100 !== 2000) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid payment amount. Expected ₦2,000');
+    if (Number(verificationData.data.amount) / 100 < 2000 || Number(verificationData.data.amount) / 100 > 4000) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Invalid payment amount. Expected ₦2,000 (plus Paystack charges)');
     }
     
     // Calculate expiry date (1 year from now)

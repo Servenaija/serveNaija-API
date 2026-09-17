@@ -24,7 +24,7 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
 // GET NEAR ME PROVIDERS (Top Rated - Public)
 // ============================================
 const getNearMeProviders = catchAsync(async (req, res) => {
-  const { latitude, longitude, limit = 20, page = 0, category } = req.query;
+  const { latitude, longitude, limit = 20, page = 0, category, state } = req.query;
 
   if (!latitude || !longitude) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Latitude and longitude are required');
@@ -40,6 +40,7 @@ const getNearMeProviders = catchAsync(async (req, res) => {
     isBanned: false,
     isDeactivated: false,
     isDeleted: false,
+    kycStatus: 'approved',
   };
 
   if (category && category.trim()) {
@@ -48,7 +49,7 @@ const getNearMeProviders = catchAsync(async (req, res) => {
 
   const allProviders = await dB.providers
     .find(matchConditions)
-    .select('_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro')
+    .select('_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro kycStatus featuredUntil')
     .lean();
 
   const providersWithDistance = allProviders.map(provider => {
@@ -68,8 +69,23 @@ const getNearMeProviders = catchAsync(async (req, res) => {
     };
   });
 
-  // Sort: providers with coordinates first (by distance), then without coordinates
+  // Ranking: paid promotions outrank everything else.
+  // 1. Featured Providers (active featuredUntil) above normal subscription
+  //    providers — within each tier, same-state providers come before
+  //    providers from other states, then nearest first, then by name.
+  const now = new Date();
+  const viewerState = (state || '').trim().toLowerCase();
+  const isFeatured = (p) => p.featuredUntil && new Date(p.featuredUntil) > now;
+  const isSameState = (p) =>
+    viewerState &&
+    (p.location?.state || '').trim().toLowerCase().includes(viewerState);
   providersWithDistance.sort((a, b) => {
+    const fa = isFeatured(a) ? 0 : 1;
+    const fb = isFeatured(b) ? 0 : 1;
+    if (fa !== fb) return fa - fb;                      // featured > normal
+    const sa = isSameState(a) ? 0 : 1;
+    const sb = isSameState(b) ? 0 : 1;
+    if (sa !== sb) return sa - sb;                      // same state first
     // If both have coordinates, sort by distance
     if (a.distance !== null && b.distance !== null) {
       return a.distance - b.distance;
@@ -118,6 +134,7 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
     isBanned: false,
     isDeactivated: false,
     isDeleted: false,
+    kycStatus: 'approved',
   };
 
   if (category && category.trim()) {
@@ -126,7 +143,7 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
 
   const allBusinesses = await dB.providers
     .find(matchConditions)
-    .select('_id firstName lastName fullName email phoneNumber profile service business location isVerifiedPro')
+    .select('_id firstName lastName fullName email phoneNumber profile service business location isVerifiedPro kycStatus featuredUntil')
     .lean();
 
   const businessesWithDistance = allBusinesses.map(business => {
@@ -147,8 +164,17 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
     };
   });
 
-  // Sort: businesses with coordinates first (by distance), then without coordinates
+  // Ranking: paid promotions outrank everything else.
+  // 1. Featured providers/businesses (active featuredUntil) above normal
+  //    subscription accounts — within each tier, same-state first, then
+  //    nearest, then by name.
+  const now = new Date();
+  const isFeaturedBiz = (b) => b.featuredUntil && new Date(b.featuredUntil) > now;
   businessesWithDistance.sort((a, b) => {
+    const fa = isFeaturedBiz(a) ? 0 : 1;
+    const fb = isFeaturedBiz(b) ? 0 : 1;
+    if (fa !== fb) return fa - fb;                      // featured > normal
+    // If both have coordinates, sort by distance
     if (a.distance !== null && b.distance !== null) {
       return a.distance - b.distance;
     }
@@ -190,6 +216,7 @@ const getCategories = catchAsync(async (req, res) => {
         isBanned: false,
         isDeactivated: false,
         isDeleted: false,
+        kycStatus: 'approved',
       });
 
       return {
@@ -214,7 +241,7 @@ const getCategories = catchAsync(async (req, res) => {
 // ============================================
 const getProvidersByCategory = catchAsync(async (req, res) => {
   const { category } = req.params;
-  const { limit = 20, page = 0, latitude, longitude } = req.query;
+  const { limit = 20, page = 0, latitude, longitude, state } = req.query;
 
   if (!category || !category.trim()) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Category is required');
@@ -250,19 +277,21 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
     });
   }
 
-  // Build match conditions using the exact category name from DB
+  // Build match conditions using the exact category name from DB.
+  // Only KYC-approved (completed) providers are publicly visible.
   const matchConditions = {
     accountType: 'provider',
     'service.category': categoryExists.name,
     isBanned: false,
     isDeactivated: false,
     isDeleted: false,
+    kycStatus: 'approved',
   };
 
   // Get ALL providers in this category (don't filter out those without coordinates)
   let providers = await dB.providers
     .find(matchConditions)
-    .select('_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro')
+    .select('_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro kycStatus featuredUntil')
     .lean();
 
   // If coordinates provided, calculate distance and sort
@@ -282,8 +311,20 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
       return { ...provider, distance };
     });
     
-    // Sort: providers with coordinates first (sorted by distance), then without coordinates
+    // Ranking: featured providers (active promotion) first, then same-state,
+    // then nearest — paid promotions outrank normal subscription listings.
+    const nowDate = new Date();
+    const viewerState = (state || '').trim().toLowerCase();
+    const featured = (p) => p.featuredUntil && new Date(p.featuredUntil) > nowDate;
+    const sameState = (p) =>
+      viewerState && (p.location?.state || '').trim().toLowerCase().includes(viewerState);
     providers.sort((a, b) => {
+      const fa = featured(a) ? 0 : 1;
+      const fb = featured(b) ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      const sa = sameState(a) ? 0 : 1;
+      const sb = sameState(b) ? 0 : 1;
+      if (sa !== sb) return sa - sb;
       // If both have coordinates, sort by distance
       if (a.distance !== null && b.distance !== null) {
         return a.distance - b.distance;

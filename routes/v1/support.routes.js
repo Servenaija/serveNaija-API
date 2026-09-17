@@ -16,6 +16,11 @@ router.route('/tickets')
   .post(verifyToken, validate(supportValidation.createTicket), supportController.createTicket)
   .all(unAllowedMethod);
 
+// Report a user (provider/business/customer) → admin-reviewed support ticket
+router.route('/reports')
+  .post(verifyToken, supportController.reportUser)
+  .all(unAllowedMethod);
+
 router.route('/tickets/:ticketId')
   .get(verifyToken, supportController.getUserTicket)
   .all(unAllowedMethod);

@@ -7,11 +7,15 @@ const mp = require('../../controllers/marketplace.controller');
 const mpValidation = require('../../validations/marketplace.validation');
 const { uploadMultiple } = require('../../middlewares/upload');
 const cache = require('../../utils/cache');
+const { teamPermission } = require('../../middlewares/team');
 const router = express.Router();
 router.use(allowedMethod);
 
 // Bust marketplace + public caches after any successful write (store/product/order/review changes)
 router.use(cache.invalidateOnWrite(['/v1.0/marketplace', '/v1.0/public']));
+// NOTE: teamPermission must run AFTER verifyToken on each route (it reads
+// req.teamMember), so seller-owned routes attach it per-route. Public/customer
+// routes are unaffected.
 
 // ─── STORES ───────────────────────────────
 router.route('/stores')
@@ -19,20 +23,20 @@ router.route('/stores')
   .all(unAllowedMethod);
 
 router.route('/stores/create')
-  .post(verifyToken, validate(mpValidation.createStore), mp.createStore)
+  .post(verifyToken, teamPermission('marketplace'), validate(mpValidation.createStore), mp.createStore)
   .all(unAllowedMethod);
 
 router.route('/stores/me')
-  .get(verifyToken, mp.getMyStore)
+  .get(verifyToken, teamPermission('marketplace'), mp.getMyStore)
   .all(unAllowedMethod);
 
 router.route('/stores/:storeId')
   .get(cache.route({ expire: 60 }), mp.getStore)
-  .put(verifyToken, validate(mpValidation.updateStore), mp.updateStore)
+  .put(verifyToken, teamPermission('marketplace'), validate(mpValidation.updateStore), mp.updateStore)
   .all(unAllowedMethod);
 
 router.route('/stores/:storeId/stats')
-  .get(verifyToken, mp.getStoreStats)
+  .get(verifyToken, teamPermission('marketplace'), mp.getStoreStats)
   .all(unAllowedMethod);
 
 router.route('/stores/:storeId/products')
@@ -45,13 +49,13 @@ router.route('/stores/:storeId/reviews')
 
 // ─── PRODUCTS ─────────────────────────────
 router.route('/products/create')
-  .post(verifyToken, validate(mpValidation.createProduct), uploadMultiple, mp.createProduct)
+  .post(verifyToken, teamPermission('marketplace'), validate(mpValidation.createProduct), uploadMultiple, mp.createProduct)
   .all(unAllowedMethod);
 
 router.route('/products/:productId')
   .get(cache.route({ expire: 60 }), mp.getProduct)
-  .put(verifyToken, validate(mpValidation.updateProduct), uploadMultiple, mp.updateProduct)
-  .delete(verifyToken, mp.deleteProduct)
+  .put(verifyToken, teamPermission('marketplace'), validate(mpValidation.updateProduct), uploadMultiple, mp.updateProduct)
+  .delete(verifyToken, teamPermission('marketplace'), mp.deleteProduct)
   .all(unAllowedMethod);
 
 router.route('/products/:productId/reviews')
@@ -81,15 +85,42 @@ router.route('/orders/me/buyer')
   .all(unAllowedMethod);
 
 router.route('/orders/me/seller')
-  .get(verifyToken, mp.getMyOrdersAsSeller)
+  .get(verifyToken, teamPermission('marketplace'), mp.getMyOrdersAsSeller)
   .all(unAllowedMethod);
 
 router.route('/orders/:orderId')
-  .get(verifyToken, mp.getOrder)
+  .get(verifyToken, teamPermission('marketplace'), mp.getOrder)
   .all(unAllowedMethod);
 
 router.route('/orders/:orderId/status')
-  .put(verifyToken, mp.updateOrderStatus)
+  .put(verifyToken, teamPermission('marketplace'), mp.updateOrderStatus)
+  .all(unAllowedMethod);
+
+// Buyer confirms delivery → releases escrow (subtotal + delivery fee) to seller wallet
+router.route('/orders/:orderId/confirm-delivery')
+  .post(verifyToken, mp.confirmDelivery)
+  .all(unAllowedMethod);
+
+// ─── DELIVERY FEE NEGOTIATION ─────────────
+// Delivery fee is not fixed: buyer proposes, seller accepts/counters/declines.
+router.route('/orders/:orderId/delivery-fee')
+  .get(verifyToken, teamPermission('marketplace'), mp.getDeliveryFeeNegotiation)
+  .all(unAllowedMethod);
+
+router.route('/orders/:orderId/delivery-fee/propose')
+  .post(verifyToken, mp.proposeDeliveryFee)
+  .all(unAllowedMethod);
+
+router.route('/orders/:orderId/delivery-fee/accept')
+  .put(verifyToken, teamPermission('marketplace'), mp.acceptDeliveryFee)
+  .all(unAllowedMethod);
+
+router.route('/orders/:orderId/delivery-fee/counter')
+  .put(verifyToken, teamPermission('marketplace'), mp.counterDeliveryFee)
+  .all(unAllowedMethod);
+
+router.route('/orders/:orderId/delivery-fee/decline')
+  .put(verifyToken, teamPermission('marketplace'), mp.declineDeliveryFee)
   .all(unAllowedMethod);
 
 // ─── REVIEWS ─────────────────────────────

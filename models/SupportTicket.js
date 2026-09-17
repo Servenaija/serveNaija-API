@@ -25,6 +25,12 @@ const supportTicketSchema = new mongoose.Schema(
       enum: ['open', 'in-progress', 'resolved', 'closed'],
       default: 'open',
     },
+    // Populated when the ticket is a user report ("Report user" button)
+    report: {
+      reportedUserId: { type: String, default: null, index: true },
+      reason: { type: String, trim: true, default: '' },
+      description: { type: String, trim: true, default: '' },
+    },
     assignedTo: { type: String, default: null },
     lastMessageAt: { type: Date, default: Date.now },
     unreadCount: { type: Number, default: 0 },

@@ -17,6 +17,10 @@ const getModelByActor = (actor) => {
     return dB.admins;
   }
 
+  if (actor === 'teamMember') {
+    return dB.teamMembers;
+  }
+
   return null;
 };
 
@@ -38,6 +42,22 @@ const decodeTokenAndAttachUser = async (token, req, next) => {
     const user = await Model.findById(id);
     if (!user) {
       return next(new ApiError(httpStatus.NOT_FOUND, 'Please authenticate'));
+    }
+
+    if (actor === 'teamMember') {
+      // Team members act inside their business owner's account: every
+      // controller keeps working against the owner provider (req.user), while
+      // req.teamMember carries the member identity + permissions for guards.
+      if (user.status !== 'active') {
+        return next(new ApiError(httpStatus.FORBIDDEN, 'This team account has been deactivated.'));
+      }
+      const owner = await dB.providers.findById(user.provider);
+      if (!owner) {
+        return next(new ApiError(httpStatus.NOT_FOUND, 'Business account not found.'));
+      }
+      req.user = owner;
+      req.teamMember = user;
+      return next();
     }
 
     req.user = user;

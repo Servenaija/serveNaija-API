@@ -102,6 +102,66 @@ cron.schedule('0 0 * * *', async () => {
   }
 });
 
+// Every 10 minutes — auto-release marketplace escrow after 24hrs with no buyer response
+cron.schedule('*/10 * * * *', async () => {
+  try {
+    const { dB } = require('./models');
+    const now = new Date();
+    const dueOrders = await dB.orders.find({
+      status: 'delivered',
+      confirmedByBuyer: false,
+      disputed: false,
+      autoReleaseAt: { $lte: now },
+      paymentStatus: 'held',
+    }).lean();
+
+    const notificationService = require('./services/notification.service');
+    for (const order of dueOrders) {
+      try {
+        const store = await dB.stores.findById(order.store).select('owner provider').lean();
+        const providerId = (store?.owner || store?.provider)?.toString();
+        const payoutAmount = (order.subtotal || 0) + (order.deliveryFee || 0);
+
+        if (providerId && payoutAmount > 0) {
+          const provider = await dB.providers.findById(providerId);
+          if (provider) {
+            await provider.updateWalletBalance(
+              payoutAmount,
+              'credit',
+              `Auto-released payout for order #${order._id.toString().slice(-6)} (no buyer response in 24hrs)`,
+              `AUTORELEASE_${order._id.toString()}_${Date.now()}`,
+              { orderId: order._id.toString(), autoRelease: true },
+            );
+          }
+        }
+
+        order.paymentStatus = 'released';
+        order.escrowReleasedAt = now;
+        order.autoReleaseAt = null;
+        await dB.orders.findByIdAndUpdate(order._id, {
+          paymentStatus: 'released',
+          escrowReleasedAt: now,
+          autoReleaseAt: null,
+        });
+
+        notificationService.sendPushNotification({
+          userId: providerId,
+          actorType: 'provider',
+          title: 'Payment Auto-Released',
+          body: `₦${payoutAmount.toLocaleString()} released to your wallet for order #${order._id.toString().slice(-6)}.`,
+          type: 'wallet',
+          data: { orderId: order._id.toString(), screen: 'wallet' },
+        }).catch(() => {});
+      } catch (err) {
+        console.error(`[cron] Auto-release failed for order ${order._id}:`, err.message);
+      }
+    }
+    if (dueOrders.length) console.log(`[cron] Auto-released ${dueOrders.length} marketplace order(s).`);
+  } catch (err) {
+    console.error('[cron] Marketplace auto-release error:', err.message);
+  }
+});
+
 // Hourly — remove cache entries that haven't been accessed in a long time
 cron.schedule('15 * * * *', async () => {
   try {

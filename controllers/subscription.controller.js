@@ -256,10 +256,14 @@ exports.subscribeToPlan = catchAsync(async (req, res) => {
     console.log('paidAmount:', paidAmount);
     console.log('amountToPay:', amountToPay);
 
-    if (paidAmount !== amountToPay) {
+    // Customers pay Paystack charges on top of the plan price, so the paid
+    // amount is the plan price + the Paystack fee (1.5% + ₦100, capped ₦2,000).
+    // Accept anything from the base price up to base + the applicable fee.
+    const paystackFee = Math.min(Math.round(amountToPay * 0.015) + 100, 2000);
+    if (paidAmount < amountToPay || paidAmount > amountToPay + paystackFee) {
       throw new ApiError(
         httpStatus.BAD_REQUEST,
-        `Payment amount mismatch. Expected: ${amountToPay}, Paid: ${paidAmount}`
+        `Payment amount mismatch. Expected: ${amountToPay} (up to ${amountToPay + paystackFee} with Paystack charges), Paid: ${paidAmount}`
       );
     }
 

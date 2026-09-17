@@ -6,41 +6,42 @@ const validate = require('../../middlewares/validate');
 const { uploadCompletionPhotos, uploadAdditionalPayment, uploadAny } = require('../../middlewares/upload');
 const bookingController = require('../../controllers/booking.controller');
 const bookingValidation = require('../../validations/booking.validation');
+const { teamPermission, logTeamActivity } = require('../../middlewares/team');
 
 const router = express.Router();
 router.use(allowedMethod);
 
 // ─── PROVIDER: Jobs ─────────────────────── (MOVED UP - STATIC ROUTES FIRST)
 router.route('/jobs')
-  .get(verifyToken, bookingController.listJobs)
+  .get(verifyToken, teamPermission('jobs'), bookingController.listJobs)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id')
-  .get(verifyToken, bookingController.getJob)
+  .get(verifyToken, teamPermission('jobs'), bookingController.getJob)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/accept')
-  .put(verifyToken, bookingController.acceptJob)
+  .put(verifyToken, teamPermission('jobs'), logTeamActivity('job.accept', 'booking'), bookingController.acceptJob)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/decline')
-  .put(verifyToken, validate(bookingValidation.declineJob), bookingController.declineJob)
+  .put(verifyToken, teamPermission('jobs'), logTeamActivity('job.decline', 'booking'), validate(bookingValidation.declineJob), bookingController.declineJob)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/status')
-  .put(verifyToken, bookingController.updateJobStatus)
+  .put(verifyToken, teamPermission('jobs'), logTeamActivity('job.status', 'booking'), bookingController.updateJobStatus)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/start-code/verify')
-  .post(verifyToken, validate(bookingValidation.verifyStartCode), bookingController.verifyStartCode)
+  .post(verifyToken, teamPermission('jobs'), logTeamActivity('job.start-code.verify', 'booking'), validate(bookingValidation.verifyStartCode), bookingController.verifyStartCode)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/complete')
-  .post(verifyToken, uploadCompletionPhotos, validate(bookingValidation.completeJob), bookingController.completeJob)
+  .post(verifyToken, teamPermission('jobs'), logTeamActivity('job.complete', 'booking'), uploadCompletionPhotos, validate(bookingValidation.completeJob), bookingController.completeJob)
   .all(unAllowedMethod);
 
 router.route('/jobs/:id/additional-payment')
-  .post(verifyToken, uploadAdditionalPayment, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
+  .post(verifyToken, teamPermission('jobs'), logTeamActivity('job.additional-payment', 'booking'), uploadAdditionalPayment, validate(bookingValidation.additionalPayment), bookingController.requestAdditionalPayment)
   .all(unAllowedMethod);
 
 // ─── CUSTOMER: Bookings ─────────────────── (MOVED DOWN - DYNAMIC ROUTES LAST)

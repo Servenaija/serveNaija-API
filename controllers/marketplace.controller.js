@@ -3,6 +3,7 @@ const catchAsync = require('../utils/catchAsync');
 const ApiError = require('../utils/ApiError');
 const { dB } = require('../models');
 const notificationService = require('../services/notification.service');
+const axios = require('axios');
 const { getIo } = require('../utils/io');
 const { uploadObject } = require('../utils/aws.s3.bucket');
 const Customer = require('../models/customer');
@@ -342,7 +343,9 @@ const getTrendingProducts = catchAsync(async (req, res) => {
 // ORDERS
 // ─────────────────────────────────────────
 const createOrder = catchAsync(async (req, res) => {
-  const { storeId, items, deliveryAddress, paymentMethod, paystackReference } = req.body;
+  const { storeId, items, deliveryAddress, deliveryFee: proposedDeliveryFee, paymentMethod, paystackReference, transactionReference, reference } = req.body;
+  // Accept all reference alias names the clients may send
+  const paymentReference = paystackReference || transactionReference || reference || null;
 
   console.log('Create order request:', JSON.stringify({ storeId, items, deliveryAddress, paymentMethod }, null, 2));
 
@@ -358,6 +361,13 @@ const createOrder = catchAsync(async (req, res) => {
 
     if (!deliveryAddress || !deliveryAddress.street || !deliveryAddress.city || !deliveryAddress.state) {
       throw new ApiError(httpStatus.BAD_REQUEST, 'Complete delivery address is required');
+    }
+
+    // Online/card payments require a Paystack reference (client pays via
+    // Paystack popup BEFORE calling this endpoint). Wallet/COD do not.
+    const onlineMethods = ['online', 'card', 'paystack', 'bank_transfer', 'transfer'];
+    if (onlineMethods.includes(paymentMethod) && !paymentReference) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Paystack reference is required for online payment');
     }
 
     // Initialize orderIdShort early
@@ -411,8 +421,13 @@ const createOrder = catchAsync(async (req, res) => {
     }
     console.log('Subtotal:', subtotal);
 
-    // Calculate fees (10% each)
-    const deliveryFee = Math.round(subtotal * 0.10);
+    // Delivery fee is the customer's proposed opening offer (negotiable with the
+    // seller). Fall back to 10% of subtotal when not provided. Service fee stays 10%.
+    const requestedFee = Number(proposedDeliveryFee);
+    const deliveryFee =
+      Number.isFinite(requestedFee) && requestedFee >= 0
+        ? Math.round(requestedFee)
+        : Math.round(subtotal * 0.10);
     const serviceFee = Math.round(subtotal * 0.10);
     const total = subtotal + deliveryFee + serviceFee;
     console.log('Total:', total, 'DeliveryFee:', deliveryFee, 'ServiceFee:', serviceFee);
@@ -423,7 +438,7 @@ const createOrder = catchAsync(async (req, res) => {
     let wallet = null;
     let transaction = null;
 
-    if (paymentMethod === 'online' || paymentMethod === 'card') {
+    if (paymentMethod === 'online' || paymentMethod === 'card' || paymentMethod === 'paystack') {
       validPaymentMethod = 'card';
       paymentStatus = 'paid';
     } else if (paymentMethod === 'bank_transfer' || paymentMethod === 'transfer') {
@@ -495,6 +510,43 @@ const createOrder = catchAsync(async (req, res) => {
     }
     console.log('Payment method:', validPaymentMethod);
 
+    // ── Paystack amount verification for online payments ──
+    // The customer paid via the Paystack popup BEFORE calling this endpoint;
+    // make sure they paid the order total (Paystack charges are paid by the
+    // customer on top, so anything from the total up to total + Paystack fee is valid).
+    if (paymentReference && validPaymentMethod === 'card') {
+      try {
+        const psRes = await axios.get(
+          `https://api.paystack.co/transaction/verify/${paymentReference}`,
+          {
+            headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+            timeout: 30000,
+          }
+        );
+        const tx = psRes.data?.data;
+        if (!psRes.data?.status || tx?.status !== 'success') {
+          throw new ApiError(httpStatus.BAD_REQUEST, 'Payment was not successful. Please try again.');
+        }
+        const paidAmount = (tx.amount || 0) / 100;
+        // Customers pay Paystack charges on top of the order total, so the paid
+        // amount is the total + the Paystack fee (1.5% + ₦100, capped ₦2,000).
+        // Accept anything from the order total up to total + the applicable fee.
+        const paystackFee = Math.min(Math.round(total * 0.015) + 100, 2000);
+        if (paidAmount < total || paidAmount > total + paystackFee) {
+          throw new ApiError(
+            httpStatus.BAD_REQUEST,
+            `Payment amount mismatch. Expected ₦${total.toLocaleString()} (up to ₦${(total + paystackFee).toLocaleString()} with Paystack charges), got ₦${paidAmount.toLocaleString()}.`
+          );
+        }
+      } catch (error) {
+        if (error instanceof ApiError) throw error;
+        throw new ApiError(
+          httpStatus.BAD_REQUEST,
+          'Could not verify payment with Paystack. ' + (error.response?.data?.message || error.message || '')
+        );
+      }
+    }
+
     console.log('Step 4: Creating order...');
     const order = await dB.orders.create({
       buyer: req.user._id,
@@ -511,8 +563,15 @@ const createOrder = catchAsync(async (req, res) => {
         landmark: deliveryAddress.landmark || '',
         phone: deliveryAddress.phone || '',
       },
+      deliveryFeeNegotiation: {
+        amount: deliveryFee,
+        counterAmount: null,
+        status: 'pending',
+        proposedBy: 'customer',
+        updatedAt: new Date(),
+      },
       paymentMethod: validPaymentMethod,
-      paystackReference: paystackReference || null,
+      paystackReference: paymentReference,
       paymentStatus: paymentStatus,
       status: paymentStatus === 'paid' ? 'confirmed' : 'pending',
       estimatedDelivery: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
@@ -542,6 +601,19 @@ const createOrder = catchAsync(async (req, res) => {
       });
     }
     console.log('Stock updated');
+
+    // ── Referral bonus: if this is the customer's FIRST order (booking or
+    // marketplace order) and they were referred by an agent, deposit ₦1,500
+    // into the agent's AGENT wallet. Never blocks or breaks the order. ──
+    try {
+      const referralService = require('../services/referral.service');
+      const referralResult = await referralService.payFirstOrderReferralBonus(req.user._id.toString());
+      if (referralResult?.paid) {
+        console.log(`[Order] Referral bonus of ₦${referralResult.amount} paid to agent ${referralResult.agentCode} for customer ${req.user._id}'s first order.`);
+      }
+    } catch (referralError) {
+      console.error('[Order] Referral bonus failed (order unaffected):', referralError.message);
+    }
 
     // ============================================
     // SEND NOTIFICATIONS
@@ -576,7 +648,6 @@ const createOrder = catchAsync(async (req, res) => {
 
     // 2. Send notification to SELLER
     try {
-      const Provider = require('../models/Provider');
       const provider = await Provider.findById(store.provider).select('fullName email');
       const sellerUserId = store.provider.toString();
 
@@ -685,12 +756,63 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   const store = await dB.stores.findOne({ provider: req.user._id });
   if (!store) throw new ApiError(httpStatus.FORBIDDEN, 'No store found.');
 
+  const updatePayload = { status };
+  if (status === 'delivered') {
+    const now = new Date();
+    updatePayload.deliveredAt = now;
+    updatePayload.autoReleaseAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    updatePayload.paymentStatus = 'held';
+  }
+
   const order = await dB.orders.findOneAndUpdate(
     { _id: req.params.orderId, store: store._id },
-    { status },
+    updatePayload,
     { new: true }
   );
   if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found.');
+
+  // If seller cancelled, refund the customer to their wallet
+  let refundAmount = 0;
+  if (status === 'cancelled') {
+    const paymentStatus = order.paymentStatus;
+    const totalAmount = order.total || 0;
+
+    if (paymentStatus === 'paid' || paymentStatus === 'held' || paymentStatus === 'pending') {
+      try {
+        const Customer = mongoose.model('Customer');
+        const customer = await Customer.findById(order.buyer);
+
+        if (customer) {
+          refundAmount = totalAmount;
+
+          console.log(`[Seller Cancel] Refunding ₦${refundAmount} to customer ${customer.email} for order ${order._id}`);
+
+          const result = await customer.updateWalletBalance(
+            refundAmount,
+            'credit',
+            `Refund for cancelled order ${order._id.toString()} (cancelled by seller)`,
+            `REFUND_ORDER_${order._id.toString()}_${Date.now()}`,
+            {
+              orderId: order._id.toString(),
+              refundAmount: refundAmount,
+              reason: 'Order cancelled by seller',
+              paymentStatus: paymentStatus,
+            }
+          );
+
+          // Update order payment status to refunded
+          order.paymentStatus = 'refunded';
+          await order.save();
+
+          console.log(`[Seller Cancel] Refunded ₦${refundAmount} to customer ${customer.email}. New wallet balance: ₦${result.wallet.balance}`);
+        }
+      } catch (refundError) {
+        console.error('[Seller Cancel] Refund failed:', refundError);
+      }
+    } else {
+      console.log(`[Seller Cancel] No refund. Payment status: ${paymentStatus}`);
+    }
+  }
 
   // Real-time socket event to buyer
   const io = getIo();
@@ -707,7 +829,7 @@ const updateOrderStatus = catchAsync(async (req, res) => {
     processing: 'Your order is being prepared.',
     shipped: 'Your order is on the way!',
     delivered: 'Your order has been delivered.',
-    cancelled: 'Your order has been cancelled.',
+    cancelled: refundAmount > 0 ? `Your order has been cancelled. ₦${refundAmount.toLocaleString()} has been refunded to your wallet.` : 'Your order has been cancelled.',
   };
   if (statusMessages[status]) {
     notificationService.sendPushNotification({
@@ -723,6 +845,77 @@ const updateOrderStatus = catchAsync(async (req, res) => {
   res.json({ order });
 });
 
+// ─── CONFIRM DELIVERY & RELEASE ESCROW ──────────────────────────────────
+const confirmDelivery = catchAsync(async (req, res) => {
+  const { orderId } = req.params;
+  const userId = req.user._id.toString();
+
+  const order = await dB.orders.findById(orderId);
+  if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found.');
+
+  if (order.buyer.toString() !== userId) {
+    throw new ApiError(httpStatus.FORBIDDEN, 'Only the buyer can confirm delivery.');
+  }
+  if (order.status !== 'delivered') {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Order has not been marked as delivered yet.');
+  }
+  if (order.confirmedByBuyer) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Delivery already confirmed.');
+  }
+  if (order.disputed) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Cannot confirm delivery while a dispute is open.');
+  }
+
+  const store = await dB.stores.findById(order.store).select('owner provider').lean();
+  const providerId = (store?.owner || store?.provider)?.toString();
+  if (!providerId) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found for this order.');
+
+  const payoutAmount = (order.subtotal || 0) + (order.deliveryFee || 0);
+  let providerWallet = null;
+  let providerTxn = null;
+
+  if (payoutAmount > 0) {
+    const provider = await dB.providers.findById(providerId);
+    if (provider) {
+      const result = await provider.updateWalletBalance(
+        payoutAmount,
+        'credit',
+        `Order payout for #${order._id.toString().slice(-6)}`,
+        `ORDER_PAYOUT_${order._id.toString()}_${Date.now()}`,
+        { orderId: order._id.toString(), subtotal: order.subtotal, deliveryFee: order.deliveryFee },
+      );
+      providerWallet = result.wallet;
+      providerTxn = result.transaction;
+    }
+  }
+
+  order.confirmedByBuyer = true;
+  order.paymentStatus = 'released';
+  order.escrowReleasedAt = new Date();
+  order.autoReleaseAt = null;
+  await order.save();
+
+  notificationService.sendPushNotification({
+    userId: providerId,
+    actorType: 'provider',
+    title: 'Payment Released',
+    body: `₦${payoutAmount.toLocaleString()} released to your wallet for order #${order._id.toString().slice(-6)}.`,
+    type: 'wallet',
+    data: { orderId: order._id.toString(), screen: 'wallet' },
+  }).catch(() => {});
+
+  res.json({
+    success: true,
+    data: {
+      order,
+      providerWallet: providerWallet ? { balance: providerWallet.balance } : null,
+      providerTransaction: providerTxn ? { id: providerTxn._id, amount: providerTxn.amount } : null,
+    },
+    message: `Delivery confirmed. ₦${payoutAmount.toLocaleString()} released to provider.`,
+  });
+});
+
+// ─── GET MY ORDERS AS BUYER ────────────────────────────────────────────
 const getMyOrdersAsBuyer = catchAsync(async (req, res) => {
   const { status, page = 0, limit = 20 } = req.query;
   const query = { buyer: req.user._id };
@@ -923,9 +1116,208 @@ const cancelOrder = catchAsync(async (req, res) => {
   });
 });
 
+// ─────────────────────────────────────────
+// DELIVERY FEE NEGOTIATION
+// Customer proposes a delivery fee; seller can accept, counter, or decline.
+// ─────────────────────────────────────────
+
+// Load an order + resolve the acting party (buyer or the store's provider)
+async function loadNegotiationOrder(req) {
+  const order = await dB.orders.findById(req.params.orderId).populate('store', 'provider owner');
+  if (!order) throw new ApiError(httpStatus.NOT_FOUND, 'Order not found.');
+
+  const userId = req.user._id.toString();
+  const buyerId = order.buyer?._id ? order.buyer._id.toString() : order.buyer?.toString();
+  const store = order.store;
+  const providerId = (store?.provider || store?.owner || '')?.toString();
+  const isBuyer = buyerId === userId;
+  const isSeller = providerId === userId;
+  if (!isBuyer && !isSeller) throw new ApiError(httpStatus.FORBIDDEN, 'Access denied.');
+
+  return { order, isBuyer, isSeller, buyerId, providerId };
+}
+
+function parseNegotiationAmount(raw) {
+  const amount = Math.round(Number(raw));
+  if (!Number.isFinite(amount) || amount < 0) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'A valid delivery fee amount is required.');
+  }
+  return amount;
+}
+
+function recomputeOrderTotal(order) {
+  const serviceFee = order.serviceFee ?? Math.round((order.subtotal || 0) * 0.10);
+  order.serviceFee = serviceFee;
+  order.total = (order.subtotal || 0) + (order.deliveryFee || 0) + serviceFee;
+}
+
+async function notifyNegotiationUpdate(order, { targetUserId, actorType, title, body }) {
+  if (!targetUserId) return;
+  notificationService
+    .sendPushNotification({
+      userId: targetUserId,
+      actorType,
+      title,
+      body,
+      type: 'order',
+      data: {
+        orderId: order._id.toString(),
+        route: 'order-details',
+        negotiationStatus: order.deliveryFeeNegotiation?.status || 'pending',
+      },
+    })
+    .catch(() => {});
+}
+
+// Customer proposes a (new) delivery fee for the order
+const proposeDeliveryFee = catchAsync(async (req, res) => {
+  const amount = parseNegotiationAmount(req.body.amount);
+  const { order, isBuyer, providerId } = await loadNegotiationOrder(req);
+
+  if (!isBuyer) throw new ApiError(httpStatus.FORBIDDEN, 'Only the buyer can propose a delivery fee.');
+  if (['delivered', 'cancelled', 'refunded'].includes(order.status)) {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Order is already ${order.status}.`);
+  }
+
+  order.deliveryFee = amount;
+  recomputeOrderTotal(order);
+  order.deliveryFeeNegotiation = {
+    amount,
+    counterAmount: null,
+    status: 'pending',
+    proposedBy: 'customer',
+    updatedAt: new Date(),
+  };
+  order.markModified('deliveryFeeNegotiation');
+  await order.save();
+
+  await notifyNegotiationUpdate(order, {
+    targetUserId: providerId,
+    actorType: 'provider',
+    title: 'Delivery Fee Offer',
+    body: `Customer proposed ₦${amount.toLocaleString()} delivery fee for order #${order._id.toString().slice(-6)}.`,
+  });
+
+  res.json({ success: true, message: `Delivery fee of ₦${amount.toLocaleString()} proposed.`, order });
+});
+
+// Either party counters the current proposal with a new amount
+// Either party counters the current proposal with a new amount
+const counterDeliveryFee = catchAsync(async (req, res) => {
+  const amount = parseNegotiationAmount(req.body.amount);
+  const { order, isBuyer, buyerId, providerId } = await loadNegotiationOrder(req);
+
+  const neg = order.deliveryFeeNegotiation;
+  if (!neg) throw new ApiError(httpStatus.BAD_REQUEST, 'No delivery fee negotiation for this order.');
+  if (neg.status === 'accepted' || neg.status === 'declined') {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Negotiation is already ${neg.status}. Start a new proposal instead.`);
+  }
+
+  const actor = isBuyer ? 'customer' : 'seller';
+  if (neg.status === 'pending' && neg.proposedBy === actor) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'Your proposal is still pending. Wait for the other party to respond.');
+  }
+
+  order.deliveryFeeNegotiation = {
+    amount: neg.amount ?? amount,
+    counterAmount: amount,
+    status: 'countered',
+    proposedBy: actor,
+    updatedAt: new Date(),
+  };
+  order.markModified('deliveryFeeNegotiation');
+  await order.save();
+
+  await notifyNegotiationUpdate(order, {
+    targetUserId: isBuyer ? providerId : buyerId,
+    actorType: isBuyer ? 'provider' : 'customer',
+    title: 'Delivery Fee Counter-Offer',
+    body: `${actor === 'seller' ? 'Seller' : 'Customer'} counter-offered ₦${amount.toLocaleString()} delivery fee for order #${order._id.toString().slice(-6)}.`,
+  });
+
+  res.json({ success: true, message: `Counter-offer of ₦${amount.toLocaleString()} sent.`, order });
+});
+
+// The party who did NOT make the last proposal accepts it → fee is locked in
+const acceptDeliveryFee = catchAsync(async (req, res) => {
+  const { order, isBuyer, buyerId, providerId } = await loadNegotiationOrder(req);
+
+  const neg = order.deliveryFeeNegotiation;
+  if (!neg) throw new ApiError(httpStatus.BAD_REQUEST, 'No delivery fee negotiation for this order.');
+  if (neg.status === 'accepted') throw new ApiError(httpStatus.BAD_REQUEST, 'Negotiation is already accepted.');
+  if (neg.status === 'declined') throw new ApiError(httpStatus.BAD_REQUEST, 'Negotiation was declined. Start a new proposal.');
+  if (neg.status === 'pending' && neg.proposedBy === (isBuyer ? 'customer' : 'seller')) {
+    throw new ApiError(httpStatus.BAD_REQUEST, 'You cannot accept your own proposal.');
+  }
+
+  const agreed = Math.round(Number(neg.counterAmount ?? neg.amount ?? order.deliveryFee ?? 0));
+  order.deliveryFee = agreed;
+  recomputeOrderTotal(order);
+  order.deliveryFeeNegotiation = {
+    amount: agreed,
+    counterAmount: null,
+    status: 'accepted',
+    proposedBy: neg.proposedBy,
+    updatedAt: new Date(),
+  };
+  order.markModified('deliveryFeeNegotiation');
+  await order.save();
+
+  await notifyNegotiationUpdate(order, {
+    targetUserId: isBuyer ? providerId : buyerId,
+    actorType: isBuyer ? 'provider' : 'customer',
+    title: 'Delivery Fee Agreed',
+    body: `Delivery fee of ₦${agreed.toLocaleString()} agreed for order #${order._id.toString().slice(-6)}.`,
+  });
+
+  res.json({
+    success: true,
+    message: `Agreed delivery fee: ₦${agreed.toLocaleString()}`,
+    order,
+  });
+});
+
+// Decline the negotiation (the order keeps its current delivery fee)
+const declineDeliveryFee = catchAsync(async (req, res) => {
+  const { order, isBuyer, buyerId, providerId } = await loadNegotiationOrder(req);
+
+  const neg = order.deliveryFeeNegotiation;
+  if (!neg) throw new ApiError(httpStatus.BAD_REQUEST, 'No delivery fee negotiation for this order.');
+  if (neg.status === 'accepted' || neg.status === 'declined') {
+    throw new ApiError(httpStatus.BAD_REQUEST, `Negotiation is already ${neg.status}.`);
+  }
+
+  neg.status = 'declined';
+  neg.counterAmount = null;
+  neg.updatedAt = new Date();
+  order.markModified('deliveryFeeNegotiation');
+  await order.save();
+
+  await notifyNegotiationUpdate(order, {
+    targetUserId: isBuyer ? providerId : buyerId,
+    actorType: isBuyer ? 'provider' : 'customer',
+    title: 'Delivery Fee Declined',
+    body: `${isBuyer ? 'Customer' : 'Seller'} declined the delivery fee negotiation for order #${order._id.toString().slice(-6)}.`,
+  });
+
+  res.json({ success: true, message: 'Negotiation declined.', order });
+});
+
+// Current negotiation state for an order
+const getDeliveryFeeNegotiation = catchAsync(async (req, res) => {
+  const { order } = await loadNegotiationOrder(req);
+  res.json({
+    success: true,
+    deliveryFee: order.deliveryFee,
+    deliveryFeeNegotiation: order.deliveryFeeNegotiation,
+  });
+});
+
 module.exports = {
   createStore, getMyStore, updateStore, getStoreStats, listStores, getStore,
   createProduct, getProduct, updateProduct, deleteProduct, getStoreProducts, searchProducts, getFeaturedProducts, getTrendingProducts,
   createOrder, getOrder, updateOrderStatus, getMyOrdersAsBuyer, getMyOrdersAsSeller,
-  createReview, getTargetReviews, cancelOrder
+  createReview, getTargetReviews, cancelOrder,
+  confirmDelivery,
+  proposeDeliveryFee, counterDeliveryFee, acceptDeliveryFee, declineDeliveryFee, getDeliveryFeeNegotiation
 };

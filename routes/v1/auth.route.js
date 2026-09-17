@@ -31,6 +31,22 @@ router.route('/login/provider')
     .post(allowedMethod, validate(authValidation.login), authController.loginProvider)
     .all(unAllowedMethod)
 
+// Team member (employee) login — email + temp password from the business owner
+router.route('/login/team')
+    .post(allowedMethod, authController.teamLogin)
+    .all(unAllowedMethod)
+
+// Team member sets their own new password (no token needed —
+// email + current temp password + new password)
+router.route('/team-change-password')
+    .post(allowedMethod, authController.teamChangePassword)
+    .all(unAllowedMethod)
+
+// Current team member session (requires a teamMember token)
+router.route('/team-me')
+    .get(verifyToken, authController.teamMe)
+    .all(unAllowedMethod)
+
 // Logout - NO CACHE (write operation; cache middleware only serves GETs anyway)
 router.route('/logout')
     .post(allowedMethod, validate(authValidation.logout), authController.logout)

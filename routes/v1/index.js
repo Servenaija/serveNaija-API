@@ -16,6 +16,7 @@ const providerOnboardingRoute = require('./providerOnboarding.routes');
 const kycRoute = require('./kyc.routes');
 const promoteRoute = require('./promote.route');
 const supportRoutes = require('./support.routes');
+const disputeRoute = require('./dispute.route');
 const subscriptionRoute = require('./subcription.route');
 const businessOnboardingRoute = require('./businessOnboarding.routes');
 const publicRoutes = require('./public.routes');
@@ -46,6 +47,7 @@ const defaultRoutes = [
   { path: '/chat', route: chatRoute },
   { path: '/calls', route: callRoute },
   { path: '/support', route: supportRoutes },
+  { path: '/disputes', route: disputeRoute },
   { path: '/wallet', route: walletRoute },
   { path: '/marketplace', route: marketplaceRoute },
   { path: '/agent', route: agentRoute },
