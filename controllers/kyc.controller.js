@@ -22,10 +22,20 @@ const dojahWebhook = catchAsync(async (req, res) => {
   const lastName = data?.id?.id_data?.last_name || '';
   const fullName = `${firstName} ${lastName}`.trim();
 
-  const userEmail =
+  const rawEmail =
     data?.user_data?.data?.email ||
     data?.email?.data?.email ||
     req.body.email;
+
+  let userEmail = null;
+
+  if (rawEmail) {
+    try {
+      userEmail = decodeURIComponent(rawEmail).trim().toLowerCase();
+    } catch (err) {
+      userEmail = String(rawEmail).trim().toLowerCase();
+    }
+  }
 
   let provider = null;
   let newStatus = '';
@@ -75,7 +85,7 @@ const dojahWebhook = catchAsync(async (req, res) => {
         title: notificationTitle,
         body: notificationBody,
         type: 'kyc',
-        data: { 
+        data: {
           status: newStatus,
           referenceId: req.body.reference_id || '',
         },
