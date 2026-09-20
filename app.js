@@ -17,7 +17,7 @@ const { errorConverter, errorHandler } = require('./middlewares/error');
 const ApiError = require('./utils/ApiError');
 const { jsonHeader } = require('./middlewares/headers');
 const cron = require("node-cron");
-
+const multer = require('multer');
 
 
 const indexRouterV1 = require('./routes/v1/');
@@ -275,6 +275,16 @@ app.use(function (err, req, res, next) {
   res.locals.error = req.app.get('env') === 'production' ? err : {};
   res.status(err.status || 500);
   res.render('error');
+});
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ message: 'File too large. Max 1GB.' });
+    }
+    return res.status(400).json({ message: err.message });
+  }
+  next(err);
 });
 
 module.exports = app;
