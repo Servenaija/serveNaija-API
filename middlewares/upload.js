@@ -1,51 +1,47 @@
 const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
 
-const uploadDir = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
-  },
-});
+const storage = multer.memoryStorage();
 
 const fileFilter = (req, file, cb) => {
   const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-  if (allowed.includes(file.mimetype)) cb(null, true);
-  else cb(new Error('Only JPEG, PNG, and WebP images are allowed.'), false);
+  if (allowed.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only JPEG, PNG, and WebP images are allowed.'), false);
+  }
 };
 
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: {
-    fileSize: 50 * 1024 * 1024, // 50MB per file
-    files: 20,
-  },
-});
+const upload = multer({ storage, fileFilter, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB max
 
 module.exports = {
+  // Single file upload
   uploadSingle: upload.single('image'),
+  
+  // Multiple files upload (for products)
   uploadMultiple: upload.array('images', 5),
+  
+  // Fields upload (for multiple different fields) - This is the one you need
   uploadFields: upload.fields([
     { name: 'image', maxCount: 1 },
     { name: 'coverImage', maxCount: 1 },
-    { name: 'photo', maxCount: 1 },
+     { name: 'photo', maxCount: 1 }, 
     { name: 'logo', maxCount: 1 },
     { name: 'selfie', maxCount: 1 },
     { name: 'document', maxCount: 1 },
     { name: 'beforePhotos', maxCount: 5 },
     { name: 'afterPhotos', maxCount: 5 },
-    { name: 'evidencePhotos', maxCount: 10 },
+     { name: 'evidencePhotos', maxCount: 10 }
   ]),
+  
+  // Completion photos upload (specific for jobs)
   uploadCompletionPhotos: upload.fields([
     { name: 'beforePhotos', maxCount: 5 },
     { name: 'afterPhotos', maxCount: 5 },
   ]),
+  
+  // Any files upload
   uploadAny: upload.any(),
-  uploadAdditionalPayment: upload.array('evidencePhotos', 10),
+    uploadAdditionalPayment: upload.array('evidencePhotos', 10),
+
 };
+
