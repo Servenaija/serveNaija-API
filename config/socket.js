@@ -75,6 +75,19 @@ function configureSocket(io) {
       }
     });
 
+    // Presence query — initial online-status snapshot for a specific user.
+    // `user_online` / `user_offline` only broadcast TRANSITIONS to sockets
+    // that are connected at that moment, so clients request the current
+    // state (via ack) when a screen opens or their socket reconnects.
+    // Event name/payload match the client protocol: `{ userId }` → ack
+    // `{ userId, isOnline }`. Payload is lenient: object or bare id string.
+    const handleUserStatus = (payload, cb) => {
+      if (typeof cb !== 'function') return;
+      const id = String(typeof payload === 'string' ? payload : payload?.userId ?? '');
+      cb({ userId: id, isOnline: Boolean(id) && isOnline(id) });
+    };
+    socket.on('check_user_status', handleUserStatus);
+
     // Typing indicator
     socket.on('typing', ({ conversationId, isTyping }) => {
       if (conversationId && userId) {

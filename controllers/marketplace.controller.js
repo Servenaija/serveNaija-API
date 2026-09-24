@@ -343,7 +343,7 @@ const getTrendingProducts = catchAsync(async (req, res) => {
 // ORDERS
 // ─────────────────────────────────────────
 const createOrder = catchAsync(async (req, res) => {
-  const { storeId, items, deliveryAddress, deliveryFee: proposedDeliveryFee, paymentMethod, paystackReference, transactionReference, reference } = req.body;
+  const { storeId, items, deliveryAddress, deliveryFee: proposedDeliveryFee, delivery_fee: deliveryFeeSnakeCase, paymentMethod, paystackReference, transactionReference, reference } = req.body;
   // Accept all reference alias names the clients may send
   const paymentReference = paystackReference || transactionReference || reference || null;
 
@@ -423,7 +423,13 @@ const createOrder = catchAsync(async (req, res) => {
 
     // Delivery fee is the customer's proposed opening offer (negotiable with the
     // seller). Fall back to 10% of subtotal when not provided. Service fee stays 10%.
-    const requestedFee = Number(proposedDeliveryFee);
+    // Accept the snake_case alias too; null/empty means "not provided" (Number(null)
+    // would otherwise be 0 and silently zero out the fee).
+    const rawRequestedFee = proposedDeliveryFee ?? deliveryFeeSnakeCase;
+    const requestedFee =
+      rawRequestedFee === null || rawRequestedFee === undefined || rawRequestedFee === ''
+        ? NaN
+        : Number(rawRequestedFee);
     const deliveryFee =
       Number.isFinite(requestedFee) && requestedFee >= 0
         ? Math.round(requestedFee)

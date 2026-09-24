@@ -70,6 +70,11 @@ const createOrder = {
     paystackReference: Joi.string().trim().optional().allow('', null),
     transactionReference: Joi.string().trim().optional().allow('', null),
     reference: Joi.string().trim().optional().allow('', null),
+    // Customer's proposed opening delivery fee (negotiable with the seller
+    // after checkout). Optional — server falls back to 10% of subtotal.
+    // Alias: some clients send snake_case.
+    deliveryFee: Joi.number().min(0).optional().allow(null),
+    delivery_fee: Joi.number().min(0).optional().allow(null),
   }),
 };
 
