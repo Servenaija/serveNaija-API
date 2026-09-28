@@ -18,7 +18,22 @@ const getStreamToken =
     const userId =
       req.user._id.toString();
 
-    const token =
+    /**
+     * The token expiry is returned alongside the token so
+     * the app can refresh it BEFORE Stream rejects it with
+     *
+     *   WS failed with code: 40: AuthErrorTokenExpired
+     *
+     * The client should treat `expiresAt` as the deadline
+     * for re-fetching a token and reconnecting its
+     * StreamVideo instance.
+     */
+    const {
+      token,
+      expiresAt,
+      expiresAtIso,
+      expiresInSeconds,
+    } =
       streamService.generateToken(
         userId
       );
@@ -26,6 +41,9 @@ const getStreamToken =
     return res.json({
       token,
       userId,
+      expiresAt,
+      expiresAtIso,
+      expiresInSeconds,
     });
   });
 

@@ -10,6 +10,34 @@ const STREAM_API_SECRET =
 
 const RING_TIMEOUT_MS = 30_000;
 
+/**
+ * =========================================================
+ * TOKEN VALIDITY
+ * =========================================================
+ *
+ * Stream's own default for a user token is 1 hour. The
+ * mobile app caches the token it receives and reuses it
+ * later (reconnect, app resumed from background, call
+ * screen opened from a push notification). Once that cached
+ * token's `exp` has passed, Stream closes the video
+ * WebSocket with:
+ *
+ *   WS failed with code: 40: AuthErrorTokenExpired
+ *
+ * So we issue a long-lived token AND return its expiry to
+ * the client, which lets the app refresh the token BEFORE
+ * it dies instead of after the call already failed.
+ */
+
+const MIN_TOKEN_VALIDITY_SECONDS =
+  5 * 60;
+
+const MAX_TOKEN_VALIDITY_SECONDS =
+  30 * 24 * 60 * 60;
+
+const DEFAULT_TOKEN_VALIDITY_SECONDS =
+  24 * 60 * 60;
+
 let client = null;
 
 function getStreamClient() {
@@ -34,9 +62,67 @@ function getStreamClient() {
 }
 
 /**
- * Generate Stream token.
+ * Clamp any requested validity into the supported range
+ * so neither a bad env value nor a per-call override can
+ * mint an absurdly short (or long-lived) token.
+ *
+ * @param {number} requested
+ * @returns {number}
  */
-function generateToken(userId) {
+function clampTokenValidity(requested) {
+  return Math.min(
+    MAX_TOKEN_VALIDITY_SECONDS,
+    Math.max(
+      MIN_TOKEN_VALIDITY_SECONDS,
+      Math.floor(requested)
+    )
+  );
+}
+
+/**
+ * Resolve how long a freshly minted Stream token should
+ * stay valid.
+ *
+ * Configurable through STREAM_TOKEN_VALIDITY_SECONDS so
+ * the value can be tuned (or shortened again for a
+ * stricter security posture) without a code change.
+ * Always clamped to a sane range.
+ */
+function getTokenValiditySeconds() {
+  const configured =
+    Number(
+      process.env
+        .STREAM_TOKEN_VALIDITY_SECONDS
+    );
+
+  if (
+    !Number.isFinite(configured) ||
+    configured <= 0
+  ) {
+    return DEFAULT_TOKEN_VALIDITY_SECONDS;
+  }
+
+  return clampTokenValidity(
+    configured
+  );
+}
+
+/**
+ * Generate Stream token.
+ *
+ * Returns the raw token string plus the expiry metadata
+ * the client needs to refresh the token before Stream
+ * rejects it (WS close code 40 — AuthErrorTokenExpired).
+ *
+ * @param {string} userId
+ * @param {object} [options]
+ * @param {number} [options.validityInSeconds] override the configured validity
+ * @returns {{ token: string, expiresAt: number, expiresAtIso: string, expiresInSeconds: number }}
+ */
+function generateToken(
+  userId,
+  options = {}
+) {
   if (!userId) {
     throw new Error(
       'Cannot generate Stream token without userId'
@@ -46,13 +132,64 @@ function generateToken(userId) {
   const streamClient =
     getStreamClient();
 
-  return streamClient.generateUserToken({
-    user_id:
-      String(userId),
+  const expiresInSeconds =
+    options.validityInSeconds
+      ? clampTokenValidity(
+          options.validityInSeconds
+        )
+      : getTokenValiditySeconds();
 
-    validity_in_seconds:
-      60 * 60,
-  });
+  /**
+   * The SDK defaults `iat` to now minus 1 second to
+   * absorb clock skew between this server and Stream.
+   */
+  const iat =
+    Math.floor(
+      (Date.now() - 1000) / 1000
+    );
+
+  const token =
+    streamClient.generateUserToken({
+      user_id:
+        String(userId),
+
+      iat,
+
+      validity_in_seconds:
+        expiresInSeconds,
+    });
+
+  /**
+   * Mirrors the SDK math
+   * (exp = iat + validity_in_seconds) so the client is
+   * told exactly when the token it just received dies.
+   */
+  const expiresAt =
+    iat + expiresInSeconds;
+
+  return {
+    token,
+
+    expiresAt,
+
+    expiresAtIso:
+      new Date(
+        expiresAt * 1000
+      ).toISOString(),
+
+    expiresInSeconds,
+  };
+}
+
+/**
+ * Backwards-compatible helper for call sites that only
+ * need the raw token string.
+ *
+ * @param {string} userId
+ * @returns {string}
+ */
+function generateTokenString(userId) {
+  return generateToken(userId).token;
 }
 
 /**
@@ -412,9 +549,15 @@ function logStreamError(
 module.exports = {
   getStreamClient,
   generateToken,
+  generateTokenString,
+  getTokenValiditySeconds,
+  clampTokenValidity,
   upsertUsers,
   createCall,
   getCall,
   endCall,
   RING_TIMEOUT_MS,
+  MIN_TOKEN_VALIDITY_SECONDS,
+  MAX_TOKEN_VALIDITY_SECONDS,
+  DEFAULT_TOKEN_VALIDITY_SECONDS,
 };

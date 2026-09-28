@@ -772,8 +772,15 @@ const initiateCall =
        * -----------------------------------------------------
        * TOKENS
        * -----------------------------------------------------
+       *
+       * Both sides get a FRESH token minted here, together
+       * with its expiry. The expiry travels with the token in
+       * the HTTP response, the `incoming_call` socket event
+       * and the push-notification payload, so the app can
+       * refresh before Stream closes the video socket with
+       *
+       *   WS failed with code: 40: AuthErrorTokenExpired
        */
-
       const callerToken =
         streamService.generateToken(
           caller.userId
@@ -1021,7 +1028,13 @@ const initiateCall =
                   .STREAM_API_KEY,
 
               token:
-                recipientToken,
+                recipientToken.token,
+
+              tokenExpiresAt:
+                recipientToken.expiresAt,
+
+              tokenExpiresAtIso:
+                recipientToken.expiresAtIso,
             }
           );
       }
@@ -1078,7 +1091,20 @@ const initiateCall =
                 .STREAM_API_KEY,
 
             token:
-              recipientToken,
+              recipientToken.token,
+
+            /**
+             * The push can sit in the tray for a while
+             * before the user taps it. Shipping the expiry
+             * lets the app detect a stale token and re-fetch
+             * a fresh one instead of joining with a dead
+             * token (WS close code 40).
+             */
+            tokenExpiresAt:
+              recipientToken.expiresAt,
+
+            tokenExpiresAtIso:
+              recipientToken.expiresAtIso,
           },
         })
         .catch(
@@ -1115,7 +1141,18 @@ const initiateCall =
               .STREAM_API_KEY,
 
           token:
-            callerToken,
+            callerToken.token,
+
+          /**
+           * Refresh the token BEFORE this timestamp to
+           * avoid Stream's WS close code 40
+           * (AuthErrorTokenExpired).
+           */
+          tokenExpiresAt:
+            callerToken.expiresAt,
+
+          tokenExpiresAtIso:
+            callerToken.expiresAtIso,
 
           type:
             callType,
