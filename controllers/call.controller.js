@@ -1105,6 +1105,54 @@ const initiateCall =
 
             tokenExpiresAtIso:
               recipientToken.expiresAtIso,
+
+            /**
+             * Deep link so tapping the notification opens the
+             * call screen (including from a cold start).
+             *
+             * The customer app reads `route` first; it carries
+             * every param CallScreen needs, so the recipient can
+             * re-fetch a fresh token if `tokenExpiresAtIso` has
+             * already passed while the push sat in the tray.
+             */
+            route:
+              `/(dashboard)/(customer)/call/${
+                callType === 'video'
+                  ? 'video'
+                  : 'audio'
+              }` +
+              `?callId=${encodeURIComponent(
+                call._id.toString()
+              )}` +
+              `&streamCallId=${encodeURIComponent(
+                streamCallId
+              )}` +
+              `&streamApiKey=${encodeURIComponent(
+                process.env.STREAM_API_KEY || ''
+              )}` +
+              `&token=${encodeURIComponent(
+                recipientToken.token
+              )}` +
+              `&recipientId=${encodeURIComponent(
+                caller.userId
+              )}` +
+              `&recipientName=${encodeURIComponent(
+                caller.name
+              )}` +
+              `&recipientPhoto=${encodeURIComponent(
+                caller.image || ''
+              )}` +
+              `&callerId=${encodeURIComponent(
+                caller.userId
+              )}` +
+              `&callerName=${encodeURIComponent(
+                caller.name
+              )}` +
+              `&callerPhoto=${encodeURIComponent(
+                caller.image || ''
+              )}` +
+              `&isInitiator=false` +
+              `&type=${callType}`,
           },
         })
         .catch(

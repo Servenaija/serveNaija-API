@@ -20,6 +20,28 @@ function calculateDistance(lat1, lon1, lat2, lon2) {
   return R * c;
 }
 
+const VALID_ACCOUNT_TYPES = ['provider', 'business'];
+
+/**
+ * Normalizes the `type` query param used by the discovery endpoints.
+ * Falls back to `fallback` for anything missing or unrecognised, so a
+ * bad/hostile value can never widen the result set.
+ */
+function normalizeAccountType(value, fallback = 'provider') {
+  const normalized = String(value || '').trim().toLowerCase();
+  return VALID_ACCOUNT_TYPES.includes(normalized) ? normalized : fallback;
+}
+
+/**
+ * Conditions every publicly discoverable account must satisfy.
+ */
+const PUBLICLY_VISIBLE = {
+  isBanned: false,
+  isDeactivated: false,
+  isDeleted: false,
+  kycStatus: 'approved',
+};
+
 // ============================================
 // GET NEAR ME PROVIDERS (Top Rated - Public)
 // ============================================
@@ -36,11 +58,8 @@ const getNearMeProviders = catchAsync(async (req, res) => {
   const safePage = Math.max(0, Number(page));
 
   const matchConditions = {
+    ...PUBLICLY_VISIBLE,
     accountType: 'provider',
-    isBanned: false,
-    isDeactivated: false,
-    isDeleted: false,
-    kycStatus: 'approved',
   };
 
   if (category && category.trim()) {
@@ -130,11 +149,8 @@ const getNearMeBusinesses = catchAsync(async (req, res) => {
   const safePage = Math.max(0, Number(page));
 
   const matchConditions = {
+    ...PUBLICLY_VISIBLE,
     accountType: 'business',
-    isBanned: false,
-    isDeactivated: false,
-    isDeleted: false,
-    kycStatus: 'approved',
   };
 
   if (category && category.trim()) {
@@ -208,27 +224,49 @@ const getCategories = catchAsync(async (req, res) => {
     .select('name description icon color')
     .sort({ name: 1 });
 
-  const categoriesWithCount = await Promise.all(
-    categories.map(async (category) => {
-      const count = await dB.providers.countDocuments({
-        'service.category': category.name,
-        accountType: 'provider',
-        isBanned: false,
-        isDeactivated: false,
-        isDeleted: false,
-        kycStatus: 'approved',
-      });
+  /**
+   * Count providers AND businesses per category in a single aggregation.
+   *
+   * Previously this only counted `accountType: 'provider'`, so the
+   * badge on a category under-reported the number of listings a
+   * customer would actually find (businesses were invisible here
+   * even though they are listed in their own tab).
+   */
+  const countRows = await dB.providers.aggregate([
+    { $match: PUBLICLY_VISIBLE },
+    {
+      $group: {
+        _id: { category: '$service.category', accountType: '$accountType' },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
 
-      return {
-        _id: category._id,
-        name: category.name,
-        description: category.description,
-        icon: category.icon || 'briefcase-outline',
-        color: category.color || '#165B43',
-        providerCount: count,
-      };
-    })
+  const countBy = new Map(
+    countRows.map((row) => [
+      `${row._id.category}|${row._id.accountType}`,
+      row.count,
+    ])
   );
+
+  const countFor = (categoryName, accountType) =>
+    countBy.get(`${categoryName}|${accountType}`) || 0;
+
+  const categoriesWithCount = categories.map((category) => {
+    const providerCount = countFor(category.name, 'provider');
+    const businessCount = countFor(category.name, 'business');
+
+    return {
+      _id: category._id,
+      name: category.name,
+      description: category.description,
+      icon: category.icon || 'briefcase-outline',
+      color: category.color || '#165B43',
+      providerCount,
+      businessCount,
+      totalCount: providerCount + businessCount,
+    };
+  });
 
   res.json({
     success: true,
@@ -241,11 +279,20 @@ const getCategories = catchAsync(async (req, res) => {
 // ============================================
 const getProvidersByCategory = catchAsync(async (req, res) => {
   const { category } = req.params;
-  const { limit = 20, page = 0, latitude, longitude, state } = req.query;
+  const { limit = 20, page = 0, latitude, longitude, state, type } = req.query;
 
   if (!category || !category.trim()) {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Category is required');
   }
+
+  /**
+   * `type=business` lists business accounts, `type=provider` (the
+   * default) lists individual providers. Without this the query was
+   * hardcoded to `accountType: 'provider'`, so business accounts that
+   * had completed onboarding, KYC and payment were never returned by
+   * the customer app's category browse.
+   */
+  const accountType = normalizeAccountType(type, 'provider');
 
   const safeLimit = Math.min(50, Math.max(1, Number(limit)));
   const safePage = Math.max(0, Number(page));
@@ -266,6 +313,7 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
           icon: 'briefcase-outline',
           color: '#165B43',
         },
+        accountType,
         providers: [],
         pagination: {
           page: safePage,
@@ -278,20 +326,24 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
   }
 
   // Build match conditions using the exact category name from DB.
-  // Only KYC-approved (completed) providers are publicly visible.
+  // Only KYC-approved (completed) accounts are publicly visible.
   const matchConditions = {
-    accountType: 'provider',
+    ...PUBLICLY_VISIBLE,
+    accountType,
     'service.category': categoryExists.name,
-    isBanned: false,
-    isDeactivated: false,
-    isDeleted: false,
-    kycStatus: 'approved',
   };
 
-  // Get ALL providers in this category (don't filter out those without coordinates)
+  // Business listings expose the `business` block too, matching
+  // /near-me/business so both tabs render from the same shape.
+  const fields =
+    accountType === 'business'
+      ? '_id firstName lastName fullName email phoneNumber profile service business location isVerifiedPro kycStatus featuredUntil'
+      : '_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro kycStatus featuredUntil';
+
+  // Get ALL accounts in this category (don't filter out those without coordinates)
   let providers = await dB.providers
     .find(matchConditions)
-    .select('_id firstName lastName fullName email phoneNumber profile service location isVerifiedPro kycStatus featuredUntil')
+    .select(fields)
     .lean();
 
   // If coordinates provided, calculate distance and sort
@@ -342,7 +394,20 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
   const total = providers.length;
 
   // Paginate
-  const paginated = providers.slice(safePage * safeLimit, (safePage + 1) * safeLimit);
+  const paginated = providers.slice(safePage * safeLimit, (safePage * safeLimit) + safeLimit);
+
+  /**
+   * Business accounts register under a business name, so expose it
+   * explicitly for the client (mirrors the mapping done by
+   * /near-me/business) instead of making it fall back to the
+   * account holder's personal fullName.
+   */
+  const decorate = (p) => ({
+    ...p,
+    ...(accountType === 'business'
+      ? { businessName: p.service?.businessName || p.business?.businessName || p.fullName }
+      : {}),
+  });
 
   res.json({
     success: true,
@@ -354,10 +419,11 @@ const getProvidersByCategory = catchAsync(async (req, res) => {
         icon: categoryExists.icon || 'briefcase-outline',
         color: categoryExists.color || '#165B43',
       },
-      providers: paginated.map(p => ({ 
-        ...p, 
-        avgRating: 0, 
-        reviewCount: 0 
+      accountType,
+      providers: paginated.map(p => ({
+        ...decorate(p),
+        avgRating: 0,
+        reviewCount: 0
       })),
       pagination: {
         page: safePage,

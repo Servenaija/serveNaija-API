@@ -60,6 +60,35 @@ function configureSocket(io) {
     }
 
     // ─── Chat Events ──────────────────────────────────────────────────────
+    // Re-join the personal room.
+    //
+    // The room is already joined at connection time from the
+    // JWT in the handshake auth, but both mobile apps emit
+    // `join_user` after connecting (e.g. after a token
+    // refresh). Honour it, but ONLY for the authenticated
+    // user — never let a client join somebody else's room.
+    socket.on('join_user', (payload) => {
+      const requestedId = String(
+        typeof payload === 'string' ? payload : payload?.userId || ''
+      );
+
+      if (!requestedId) return;
+
+      if (!userId || requestedId !== String(userId)) {
+        console.warn(
+          `User ${userId || 'anonymous'} attempted to join user room for ${requestedId} - rejected`
+        );
+        return;
+      }
+
+      socket.join(`user_${requestedId}`);
+
+      if (!onlineUsers.has(requestedId)) {
+        onlineUsers.set(requestedId, socket.id);
+        socket.broadcast.emit('user_online', { userId: requestedId });
+      }
+    });
+
     // Join a chat conversation room
     socket.on('join_conversation', (conversationId) => {
       if (conversationId) {
