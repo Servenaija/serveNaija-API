@@ -704,57 +704,57 @@ const initiateCall =
         'accepted',
       ];
 
-      const existingCall =
-        await dB.calls.findOne({
-          $or: [
-            {
-              initiator:
-                caller.userId,
+      // const existingCall =
+      //   await dB.calls.findOne({
+      //     $or: [
+      //       {
+      //         initiator:
+      //           caller.userId,
 
-              status: {
-                $in:
-                  activeStatuses,
-              },
-            },
+      //         status: {
+      //           $in:
+      //             activeStatuses,
+      //         },
+      //       },
 
-            {
-              recipient:
-                caller.userId,
+      //       {
+      //         recipient:
+      //           caller.userId,
 
-              status: {
-                $in:
-                  activeStatuses,
-              },
-            },
+      //         status: {
+      //           $in:
+      //             activeStatuses,
+      //         },
+      //       },
 
-            {
-              initiator:
-                recipientId,
+      //       {
+      //         initiator:
+      //           recipientId,
 
-              status: {
-                $in:
-                  activeStatuses,
-              },
-            },
+      //         status: {
+      //           $in:
+      //             activeStatuses,
+      //         },
+      //       },
 
-            {
-              recipient:
-                recipientId,
+      //       {
+      //         recipient:
+      //           recipientId,
 
-              status: {
-                $in:
-                  activeStatuses,
-              },
-            },
-          ],
-        });
+      //         status: {
+      //           $in:
+      //             activeStatuses,
+      //         },
+      //       },
+      //     ],
+      //   });
 
-      if (existingCall) {
-        throw new ApiError(
-          httpStatus.CONFLICT,
-          'User is already in an active call.'
-        );
-      }
+      // if (existingCall) {
+      //   throw new ApiError(
+      //     httpStatus.CONFLICT,
+      //     'User is already in an active call.'
+      //   );
+      // }
 
       /**
        * -----------------------------------------------------
