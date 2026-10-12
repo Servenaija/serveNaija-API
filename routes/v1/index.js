@@ -24,6 +24,7 @@ const customerRoute = require('./customer.route');
 const streamRoute = require('./stream.route');
 const reviewRoute = require('./review.routes');
 const contactRoute = require('./contact.route');
+const adminOpsRoute = require('./adminOps.route');
 
 
 const router = express.Router();
@@ -52,7 +53,13 @@ const defaultRoutes = [
   { path: '/marketplace', route: marketplaceRoute },
   { path: '/agent', route: agentRoute },
   { path: '/contact', route: contactRoute },
+  { path: '/admin-ops', route: adminOpsRoute },
 ];
+defaultRoutes.forEach((route) => {
+  if (typeof route.route !== 'function') {
+    console.error('❌ BAD ROUTE MODULE:', route.path, '→', typeof route.route, route.route);
+  }
+});
 
 defaultRoutes.forEach((route) => {
   router.use(route.path, route.route);

@@ -345,7 +345,7 @@ const listProviders = catchAsync(async (req, res) => {
   const query = {};
   if (filter === 'active') query.isBanned = false;
   else if (filter === 'banned') query.isBanned = true;
-  else if (filter === 'kyc_pending') query['kyc.status'] = { $in: ['submitted', 'pending'] };
+  else if (filter === 'kyc_pending') query.kycStatus = { $in: ['submitted', 'pending'] };
   else if (filter === 'provider') query.accountType = 'provider';
   else if (filter === 'business') query.accountType = 'business';
 
