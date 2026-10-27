@@ -54,6 +54,22 @@ const directMessageBody = Joi.object({
   bookingId: Joi.string().allow(null, '').default(null),
 });
 
+// Agent payout validations
+const agentPayoutSingleBody = Joi.object({
+  agentId: Joi.string().required(),
+  note: Joi.string().allow('').max(500).default(''),
+});
+
+const agentPayoutBulkBody = Joi.object({
+  items: Joi.array()
+    .items(Joi.string().required())
+    .min(1)
+    .max(500)
+    .optional(),
+  releaseAll: Joi.boolean().default(false),
+  note: Joi.string().allow('').max(500).default(''),
+}).or('items', 'releaseAll');
+
 module.exports = {
   cancelBody,
   releaseSingleBody,
@@ -61,4 +77,6 @@ module.exports = {
   broadcastBody,
   targetedBody,
   directMessageBody,
+  agentPayoutSingleBody,
+  agentPayoutBulkBody,
 };

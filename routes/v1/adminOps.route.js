@@ -31,6 +31,14 @@ router.route('/payouts/queue').get(requirePermission('transactions'), ops.getPay
 router.route('/payouts/release').post(requirePermission('transactions'), validate(v.releaseSingleBody), ops.releaseSinglePayout).all(unAllowedMethod);
 router.route('/payouts/release-bulk').post(requirePermission('transactions'), validate(v.releaseBulkBody), ops.releaseBulkPayouts).all(unAllowedMethod);
 
+// agent payouts
+router.route('/agent-payouts/queue').get(requirePermission('transactions'), ops.getAgentPayoutQueue).all(unAllowedMethod);
+router.route('/agent-payouts/release').post(requirePermission('transactions'), validate(v.agentPayoutSingleBody), ops.releaseAgentPayout).all(unAllowedMethod);
+router.route('/agent-payouts/release-bulk').post(requirePermission('transactions'), validate(v.agentPayoutBulkBody), ops.releaseBulkAgentPayouts).all(unAllowedMethod);
+
+// paystack transaction receipts
+router.route('/paystack/transactions').get(requirePermission('transactions'), ops.getPaystackTransactions).all(unAllowedMethod);
+
 // unread counts (navbar badge)
 router.route('/chat/unread-counts').get(ops.getUnreadCounts).all(unAllowedMethod);
 

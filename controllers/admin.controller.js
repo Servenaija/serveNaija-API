@@ -481,24 +481,48 @@ async function enrichKYCWithName(kycRecords) {
   }));
 }
 
-// GET /admins/kyc
+// GET /admins/kyc — KYC data fetched from Provider schema (kycStatus)
 const listKYC = catchAsync(async (req, res) => {
   const { search, status, page: rawPage, limit: rawLimit } = req.query;
   const { page, limit, skip } = paginationParams({ page: rawPage, limit: rawLimit });
 
-  const query = {};
-  if (status && status !== 'all') query.status = status;
+  const query = { isBanned: { $ne: true } };
+  if (status && status !== 'all') query.kycStatus = status;
 
   const [rawRecords, total] = await Promise.all([
-    dB.kyc.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit),
-    dB.kyc.countDocuments(query),
+    dB.providers.find(query)
+      .select('fullName email phoneNumber kycStatus profile profilePhoto createdAt')
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit),
+    dB.providers.countDocuments(query),
   ]);
 
-  let records = await enrichKYCWithName(rawRecords);
+  const records = rawRecords.map((r) => ({
+    _id: r._id,
+    userId: r._id,
+    userType: 'provider',
+    fullName: r.fullName,
+    userName: r.fullName,
+    email: r.email,
+    userEmail: r.email,
+    phoneNumber: r.phoneNumber,
+    status: r.kycStatus || 'not_started',
+    documentType: null,
+    documentImageUrl: null,
+    selfieImageUrl: null,
+    faceMatchScore: null,
+    faceMatchPassed: null,
+    rejectionReason: null,
+    reviewedAt: null,
+    createdAt: r.createdAt,
+    profilePhoto: r.profilePhoto || r.profile?.photo || null,
+    userAvatar: r.profilePhoto || r.profile?.photo || null,
+  }));
 
   if (search) {
     const q = search.toLowerCase();
-    records = records.filter((r) => r.userName.toLowerCase().includes(q) || (r.documentType || '').includes(q));
+    records = records.filter((r) => r.userName.toLowerCase().includes(q) || r.email.toLowerCase().includes(q));
   }
 
   res.json({ records, total, page, limit, totalPages: Math.ceil(total / limit) });
@@ -506,33 +530,23 @@ const listKYC = catchAsync(async (req, res) => {
 
 // PUT /admins/kyc/:id/approve
 const approveKYC = catchAsync(async (req, res) => {
-  const kyc = await dB.kyc.findById(req.params.id);
-  if (!kyc) throw new ApiError(httpStatus.NOT_FOUND, 'KYC record not found.');
+  const provider = await dB.providers.findById(req.params.id);
+  if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found.');
 
-  kyc.status = 'approved';
-  kyc.reviewedAt = new Date();
-  kyc.reviewedBy = req.user._id.toString();
-  kyc.rejectionReason = null;
-  await kyc.save();
-
-  // Update provider KYC status if applicable
-  if (kyc.userType === 'provider') {
-    await dB.providers.findByIdAndUpdate(kyc.userId, {
-      $set: { 'kyc.status': 'approved', 'kyc.reviewedAt': kyc.reviewedAt },
-    });
-  }
+  provider.kycStatus = 'approved';
+  await provider.save();
 
   // Notify user
   notificationService.sendPushNotification({
-    userId: kyc.userId,
-    actorType: kyc.userType,
+    userId: provider._id.toString(),
+    actorType: 'provider',
     title: 'Identity Verified!',
     body: 'Your identity has been successfully verified by our team.',
     type: 'kyc',
     data: { kycStatus: 'approved' },
   }).catch(() => {});
 
-  res.json({ message: 'KYC approved.', kyc });
+  res.json({ message: 'KYC approved.', provider });
 });
 
 // PUT /admins/kyc/:id/reject
@@ -540,31 +554,22 @@ const rejectKYC = catchAsync(async (req, res) => {
   const { reason } = req.body;
   if (!reason || !reason.trim()) throw new ApiError(httpStatus.BAD_REQUEST, 'A rejection reason is required.');
 
-  const kyc = await dB.kyc.findById(req.params.id);
-  if (!kyc) throw new ApiError(httpStatus.NOT_FOUND, 'KYC record not found.');
+  const provider = await dB.providers.findById(req.params.id);
+  if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found.');
 
-  kyc.status = 'rejected';
-  kyc.rejectionReason = reason.trim();
-  kyc.reviewedAt = new Date();
-  kyc.reviewedBy = req.user._id.toString();
-  await kyc.save();
-
-  if (kyc.userType === 'provider') {
-    await dB.providers.findByIdAndUpdate(kyc.userId, {
-      $set: { 'kyc.status': 'rejected', 'kyc.rejectionReason': reason.trim(), 'kyc.reviewedAt': kyc.reviewedAt },
-    });
-  }
+  provider.kycStatus = 'rejected';
+  await provider.save();
 
   notificationService.sendPushNotification({
-    userId: kyc.userId,
-    actorType: kyc.userType,
+    userId: provider._id.toString(),
+    actorType: 'provider',
     title: 'KYC Not Approved',
     body: `Your KYC was not approved: ${reason.trim()}`,
     type: 'kyc',
     data: { kycStatus: 'rejected' },
   }).catch(() => {});
 
-  res.json({ message: 'KYC rejected.', kyc });
+  res.json({ message: 'KYC rejected.', provider });
 });
 
 // ─── TRANSACTIONS ─────────────────────────────────────────────────────────────

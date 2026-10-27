@@ -106,18 +106,76 @@ const getDashboardV2 = catchAsync(async (req, res) => {
   const kycFailed = kycMap.get('failed') || 0;
   const kycNoKyc = kycMap.get('idle') || Math.max(0, totalProviders - kycPending - kycApproved - kycFailed);
 
-  const revenueAgg = await dB.transactions.aggregate([
-    { $match: { type: { $in: ['credit', 'escrow_release'] }, status: 'success' } },
+  // ── PLATFORM REVENUE CALCULATION ────────────────────────────────
+  // Bookings: platform makes ₦1,500 per completed booking
+  const bookingRevenue = completedBookings * 1500;
+
+  // Marketplace: platform makes 10% commission on non-cancelled orders
+  const orderRevenueAgg = await dB.orders.aggregate([
+    {
+      $match: {
+        status: { $nin: ['cancelled', 'refunded'] },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: '$total' },
+      },
+    },
+  ]);
+  const orderVolume = orderRevenueAgg[0]?.total || 0;
+  const marketplaceRevenue = Math.round(orderVolume * 0.1);
+
+  // Subscriptions: sum of subscription transaction amounts
+  const subscriptionRevenueAgg = await dB.transactions.aggregate([
+    { $match: { type: 'subscription', status: 'success' } },
     { $group: { _id: null, total: { $sum: '$amount' } } },
   ]);
-  const totalRevenue = revenueAgg[0]?.total || 0;
+  const subscriptionRevenue = subscriptionRevenueAgg[0]?.total || 0;
 
+  const totalRevenue = bookingRevenue + marketplaceRevenue + subscriptionRevenue;
+
+  // Today's revenue (same calculation, today only)
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
-  const todayAgg = await dB.transactions.aggregate([
-    { $match: { type: { $in: ['credit', 'escrow_release'] }, status: 'success', createdAt: { $gte: todayStart } } },
+
+  const todayCompletedBookings = await dB.bookings.countDocuments({
+    status: 'completed',
+    completedAt: { $gte: todayStart },
+  });
+  const todayBookingRevenue = todayCompletedBookings * 1500;
+
+  const todayOrderRevenueAgg = await dB.orders.aggregate([
+    {
+      $match: {
+        status: { $nin: ['cancelled', 'refunded'] },
+        updatedAt: { $gte: todayStart },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: '$total' },
+      },
+    },
+  ]);
+  const todayOrderVolume = todayOrderRevenueAgg[0]?.total || 0;
+  const todayMarketplaceRevenue = Math.round(todayOrderVolume * 0.1);
+
+  const todaySubscriptionRevenueAgg = await dB.transactions.aggregate([
+    {
+      $match: {
+        type: 'subscription',
+        status: 'success',
+        createdAt: { $gte: todayStart },
+      },
+    },
     { $group: { _id: null, total: { $sum: '$amount' } } },
   ]);
+  const todaySubscriptionRevenue = todaySubscriptionRevenueAgg[0]?.total || 0;
+
+  const todayRevenue = todayBookingRevenue + todayMarketplaceRevenue + todaySubscriptionRevenue;
 
   res.json({
     totalProviders,
@@ -136,8 +194,19 @@ const getDashboardV2 = catchAsync(async (req, res) => {
       source: 'provider.kycStatus',
     },
     pendingKYC: kycPending, // backwards-compat alias
+    // Platform revenue breakdown
     totalRevenue,
-    todayRevenue: todayAgg[0]?.total || 0,
+    todayRevenue,
+    revenueBreakdown: {
+      bookings: bookingRevenue,
+      marketplace: marketplaceRevenue,
+      subscriptions: subscriptionRevenue,
+    },
+    todayRevenueBreakdown: {
+      bookings: todayBookingRevenue,
+      marketplace: todayMarketplaceRevenue,
+      subscriptions: todaySubscriptionRevenue,
+    },
   });
 });
 
@@ -251,7 +320,25 @@ const getFinanceOverview = catchAsync(async (req, res) => {
   });
 
   const totalWithdrawn = withdrawnAgg[0]?.total || 0;
-  const allTimeVolume = volumeAgg[0]?.total || 0;
+
+  // ── Correct platform revenue (not full transaction volume) ────────
+  const completedBookingsCount = await dB.bookings.countDocuments({ status: 'completed' });
+  const bookingRevenue = completedBookingsCount * 1500;
+
+  const orderRevenueAgg = await dB.orders.aggregate([
+    { $match: { status: { $nin: ['cancelled', 'refunded'] } } },
+    { $group: { _id: null, total: { $sum: '$total' } } },
+  ]);
+  const orderVolume = orderRevenueAgg[0]?.total || 0;
+  const marketplaceRevenue = Math.round(orderVolume * 0.1);
+
+  const subscriptionRevenueAgg = await dB.transactions.aggregate([
+    { $match: { type: 'subscription', status: 'success' } },
+    { $group: { _id: null, total: { $sum: '$amount' } } },
+  ]);
+  const subscriptionRevenue = subscriptionRevenueAgg[0]?.total || 0;
+
+  const allTimeVolume = bookingRevenue + marketplaceRevenue + subscriptionRevenue;
 
   res.json({
     paystack: {
@@ -269,6 +356,10 @@ const getFinanceOverview = catchAsync(async (req, res) => {
       customerWalletCount: customerWalletsAgg[0]?.count || 0,
       providerBalanceTotal: providerWalletsAgg[0]?.total || 0,
       providerWalletCount: providerWalletsAgg[0]?.count || 0,
+      // Revenue breakdown
+      bookingRevenue,
+      marketplaceRevenue,
+      subscriptionRevenue,
     },
     customerWallets,
     customerWalletsPagination: { page: cPage, limit: cLimit, total: customerWalletTotal, totalPages: Math.ceil(customerWalletTotal / cLimit) },
@@ -543,11 +634,9 @@ const getPayoutQueue = catchAsync(async (req, res) => {
 
 async function releaseOne(targetType, targetId, note, adminId) {
   // ── Provider wallet payout (the primary flow) ─────────────────
-  // A provider's total money owed = wallet balance + held booking escrow +
-  // held order escrow (exactly what collectReleasable shows). Releasing pays
-  // the FULL amount out (bank transfer when verified) and then clears every
-  // source: zero the wallet AND mark all held escrow 'released' so it never
-  // reappears in the next queue (no double payout).
+  // CRITICAL: Paystack transfer MUST succeed before we zero the wallet
+  // or mark anything as released. If Paystack balance is insufficient
+  // or the transfer fails, we throw and nothing is modified.
   if (targetType === 'provider_payout') {
     const providerId = String(targetId);
     const provider = await dB.providers.findById(providerId);
@@ -579,40 +668,51 @@ async function releaseOne(targetType, targetId, note, adminId) {
       return { targetType, targetId, skipped: true, reason: 'nothing owed' };
     }
 
-    // Guarantee a wallet exists so the withdrawal ledger has a wallet ref
-    // (getWallet() creates one on demand if the provider has none yet).
-    const ledgerWallet = wallet || (await provider.getWallet());
+    // ── STEP 1: Check Paystack available balance BEFORE any transfer ──
+    const paystack = await adminOpsService.getPaystackAvailableBalance();
+    if (paystack.unavailable) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Paystack balance check failed. Cannot process payout.');
+    }
+    if (Number(paystack.available) < totalAmount) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Insufficient Paystack balance. Available: ₦${paystack.available.toLocaleString()}, Required: ₦${totalAmount.toLocaleString()}`
+      );
+    }
 
     const bank = wallet?.bankDetails?.accountNumber ? wallet.bankDetails : provider.bankDetails || {};
+    if (!bank.accountNumber || !bank.bankCode || !process.env.PAYSTACK_SECRET_KEY) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Provider has no verified bank details or Paystack is not configured.');
+    }
+
     const reference = `ADMIN_PAYOUT_${providerId}_${Date.now()}`;
 
-    // Attempt live Paystack transfer for the FULL amount when bank details are verified
-    let transfer = null;
-    let transferError = null;
-    if (bank.accountNumber && bank.bankCode && process.env.PAYSTACK_SECRET_KEY) {
-      try {
-        transfer = await adminOpsService.transferToProviderBank({
-          amount: totalAmount,
-          bankCode: bank.bankCode,
-          accountNumber: bank.accountNumber,
-          accountName: bank.accountName || provider.fullName,
-          reason: `ServeNaija payout${note ? ` — ${note}` : ''}`,
-          reference,
-        });
-      } catch (e) {
-        transferError = e.message;
-      }
+    // ── STEP 2: Attempt live Paystack transfer ──
+    let transfer;
+    try {
+      transfer = await adminOpsService.transferToProviderBank({
+        amount: totalAmount,
+        bankCode: bank.bankCode,
+        accountNumber: bank.accountNumber,
+        accountName: bank.accountName || provider.fullName,
+        reason: `ServeNaija payout${note ? ` — ${note}` : ''}`,
+        reference,
+      });
+    } catch (e) {
+      // Transfer FAILED — do NOT zero wallet, do NOT mark as released
+      throw new ApiError(httpStatus.BAD_REQUEST, `Paystack transfer failed: ${e.message}`);
     }
 
     const now = new Date();
-    // 1) Zero the wallet (if one exists)
+
+    // ── STEP 3: Transfer succeeded — now zero wallet and mark released ──
     const balanceBefore = walletAmount;
     if (wallet) {
       wallet.balance = 0;
       await wallet.save();
     }
 
-    // 2) Mark every held booking escrow as released (money now paid out)
+    // Mark every held booking escrow as released
     const bookingIds = heldBookings.map((b) => b._id);
     if (bookingIds.length) {
       await dB.bookings.updateMany(
@@ -621,7 +721,7 @@ async function releaseOne(targetType, targetId, note, adminId) {
       );
     }
 
-    // 3) Mark every held order escrow as released
+    // Mark every held order escrow as released
     const orderIds = heldOrders.map((o) => o._id);
     if (orderIds.length) {
       await dB.orders.updateMany(
@@ -630,7 +730,8 @@ async function releaseOne(targetType, targetId, note, adminId) {
       );
     }
 
-    // 4) One withdrawal transaction for the full amount (ledger integrity)
+    // One withdrawal transaction for the full amount (ledger integrity)
+    const ledgerWallet = wallet || (await provider.getWallet());
     const txn = await dB.transactions.create({
       wallet: ledgerWallet._id,
       owner: providerId,
@@ -642,9 +743,9 @@ async function releaseOne(targetType, targetId, note, adminId) {
       currency: ledgerWallet.currency || 'NGN',
       description: `Admin payout to ${bank.accountName || provider.fullName} ${bank.accountNumber || ''} (wallet ${balanceBefore} + bookings ${bookingEscrow} + orders ${orderEscrow})${note ? ` — ${note}` : ''}`,
       reference,
-      status: transferError ? 'pending' : 'success',
+      status: 'success',
       metadata: {
-        releasedBy: adminId, bankDetails: bank, transfer, transferError, note,
+        releasedBy: adminId, bankDetails: bank, transfer, note,
         breakdown: { wallet: balanceBefore, bookingEscrow, orderEscrow },
         bookingIds: bookingIds.map(String), orderIds: orderIds.map(String),
       },
@@ -652,21 +753,21 @@ async function releaseOne(targetType, targetId, note, adminId) {
 
     const io = getIo();
     if (io) {
-      io.to(`user_${providerId}`).emit('payout_released', { providerId, amount: totalAmount, reference, transfer, transferError, at: now });
-      io.to('admin_support').emit('payout_released', { providerId, amount: totalAmount, reference, transferError, at: now });
+      io.to(`user_${providerId}`).emit('payout_released', { providerId, amount: totalAmount, reference, transfer, at: now });
+      io.to('admin_support').emit('payout_released', { providerId, amount: totalAmount, reference, at: now });
     }
     notificationService.sendPushNotification({
       userId: providerId, actorType: 'provider',
-      title: transferError ? 'Payout Recorded (transfer pending)' : 'Payout Released',
-      body: `N${totalAmount.toLocaleString()} has been released${bank.accountNumber ? ` to your bank account ${bank.accountNumber}` : ' (no bank details on file)'}.${transferError ? ` Transfer note: ${transferError}` : ''}`,
-      type: 'payment', data: { amount: totalAmount, reference, transferError },
+      title: 'Payout Released',
+      body: `₦${totalAmount.toLocaleString()} has been transferred to your bank account ${bank.accountNumber}.`,
+      type: 'payment', data: { amount: totalAmount, reference, transfer },
     }).catch(() => {});
 
     return {
       targetType, targetId, released: true, amount: totalAmount, transactionId: txn._id,
       breakdown: { wallet: balanceBefore, bookingEscrow, orderEscrow },
-      bankDetails: bank, transfer, transferError,
-      transferStatus: transferError ? 'failed' : (transfer ? 'initiated' : 'manual'),
+      bankDetails: bank, transfer,
+      transferStatus: 'success',
     };
   }
 
@@ -954,32 +1055,54 @@ const targetedPush = catchAsync(async (req, res) => {
 
 const getOnlinePresence = catchAsync(async (req, res) => {
   const { page, limit, skip } = paging(req.query, { defLimit: 25, maxLimit: 100 });
-  const type = req.query.type === 'customer' ? 'customer' : 'provider';
-  const Model = type === 'customer' ? dB.customers : dB.providers;
 
-  const [users, total] = await Promise.all([
-    Model.find({ isBanned: { $ne: true } })
-      .select('fullName email phoneNumber lastLogin profile profilePhoto')
-      .sort({ lastLogin: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    Model.countDocuments({ isBanned: { $ne: true } }),
+  // Fetch both providers and customers presence data
+  const fetchPresence = async (Model, label) => {
+    const [users, total] = await Promise.all([
+      Model.find({ isBanned: { $ne: true } })
+        .select('fullName email phoneNumber lastLogin profile profilePhoto')
+        .sort({ lastLogin: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Model.countDocuments({ isBanned: { $ne: true } }),
+    ]);
+
+    const withFlag = users.map((u) => ({
+      ...u,
+      profilePhoto: u.profilePhoto || u.profile?.photo || null,
+      isOnline: isOnline(String(u._id)),
+    }));
+    const online = withFlag.filter((x) => x.isOnline);
+
+    return {
+      [label]: withFlag,
+      onlineProviders: label === 'providers' ? online : [],
+      onlineCustomers: label === 'customers' ? online : [],
+      counts: {
+        onlineProviders: label === 'providers' ? online.length : 0,
+        onlineCustomers: label === 'customers' ? online.length : 0,
+      },
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  };
+
+  const [providersData, customersData] = await Promise.all([
+    fetchPresence(dB.providers, 'providers'),
+    fetchPresence(dB.customers, 'customers'),
   ]);
 
-  const withFlag = users.map((u) => ({
-    ...u,
-    profilePhoto: u.profilePhoto || u.profile?.photo || null,
-    isOnline: isOnline(String(u._id)),
-  }));
-  const online = withFlag.filter((x) => x.isOnline);
-
-  // total online counts across both types (cheap — from the in-memory map size is not per-type, so count via a light query)
+  // Merge counts from both
   res.json({
-    type,
-    users: withFlag,
-    onlineOnPage: online.length,
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    providers: providersData.providers,
+    customers: customersData.customers,
+    onlineProviders: providersData.onlineProviders,
+    onlineCustomers: customersData.onlineCustomers,
+    counts: {
+      onlineProviders: providersData.counts.onlineProviders + customersData.counts.onlineProviders,
+      onlineCustomers: providersData.counts.onlineCustomers + customersData.counts.onlineCustomers,
+    },
+    pagination: { page, limit, total: providersData.pagination.total + customersData.pagination.total, totalPages: Math.ceil((providersData.pagination.total + customersData.pagination.total) / limit) },
   });
 });
 
@@ -987,32 +1110,53 @@ const getUserActivity = catchAsync(async (req, res) => {
   const days = Math.min(90, Math.max(1, Number(req.query.days) || 14));
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
   const { page, limit, skip } = paging(req.query, { defLimit: 25, maxLimit: 100 });
-  const type = req.query.type === 'customer' ? 'customer' : 'provider';
-  const status = req.query.status === 'dormant' ? 'dormant' : 'active';
-  const Model = type === 'customer' ? dB.customers : dB.providers;
 
-  const lastLoginMatch = status === 'active'
-    ? { lastLogin: { $gte: cutoff } }
-    : { $or: [{ lastLogin: null }, { lastLogin: { $lt: cutoff } }, { lastLogin: { $exists: false } }] };
+  const fetchActivity = async (Model, label) => {
+    const activeQuery = { isBanned: { $ne: true }, lastLogin: { $gte: cutoff } };
+    const dormantQuery = { isBanned: { $ne: true }, $or: [{ lastLogin: null }, { lastLogin: { $lt: cutoff } }, { lastLogin: { $exists: false } }] };
 
-  const query = { isBanned: { $ne: true }, ...lastLoginMatch };
-  const [users, total, activeCount, dormantCount] = await Promise.all([
-    Model.find(query)
-      .select('fullName email phoneNumber lastLogin createdAt profile profilePhoto')
-      .sort({ lastLogin: -1 })
-      .skip(skip)
-      .limit(limit)
-      .lean(),
-    Model.countDocuments(query),
-    Model.countDocuments({ isBanned: { $ne: true }, lastLogin: { $gte: cutoff } }),
-    Model.countDocuments({ isBanned: { $ne: true }, $or: [{ lastLogin: null }, { lastLogin: { $lt: cutoff } }, { lastLogin: { $exists: false } }] }),
+    const [activeUsers, dormantUsers, activeCount, dormantCount] = await Promise.all([
+      Model.find(activeQuery)
+        .select('fullName email phoneNumber lastLogin createdAt profile profilePhoto')
+        .sort({ lastLogin: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Model.find(dormantQuery)
+        .select('fullName email phoneNumber lastLogin createdAt profile profilePhoto')
+        .sort({ lastLogin: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Model.countDocuments(activeQuery),
+      Model.countDocuments(dormantQuery),
+    ]);
+
+    return {
+      [label]: {
+        active: activeUsers.map((u) => ({ ...u, profilePhoto: u.profilePhoto || u.profile?.photo || null })),
+        dormant: dormantUsers.map((u) => ({ ...u, profilePhoto: u.profilePhoto || u.profile?.photo || null })),
+        activeCount,
+        dormantCount,
+      },
+    };
+  };
+
+  const [providersData, customersData] = await Promise.all([
+    fetchActivity(dB.providers, 'providers'),
+    fetchActivity(dB.customers, 'customers'),
   ]);
 
   res.json({
-    days, cutoff, type, status,
-    users: users.map((u) => ({ ...u, profilePhoto: u.profilePhoto || u.profile?.photo || null })),
-    activeCount, dormantCount,
-    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    days, cutoff,
+    providers: providersData.providers,
+    customers: customersData.customers,
+    pagination: {
+      page,
+      limit,
+      total: providersData.providers.activeCount + customersData.customers.activeCount + providersData.providers.dormantCount + customersData.customers.dormantCount,
+      totalPages: Math.ceil((providersData.providers.activeCount + customersData.customers.activeCount + providersData.providers.dormantCount + customersData.customers.dormantCount) / limit),
+    },
   });
 });
 
@@ -1070,6 +1214,330 @@ const sendDirectMessage = catchAsync(async (req, res) => {
   res.status(httpStatus.CREATED).json({ conversation, message });
 });
 
+// ─── 4d. agent payouts ─────────────────────────────────────────────
+
+async function collectReleasableAgents(limit = 100, skip = 0) {
+  const agents = await dB.agents
+    .find({
+      $or: [
+        { 'wallet.pendingPayout': { $gt: 0 } },
+        { pendingEarnings: { $gt: 0 } },
+        { earnings: { $gt: 0 } },
+      ],
+    })
+    .select('userId userType agentCode wallet earnings pendingEarnings totalCustomerReferrals totalProviderReferrals referrals isActive createdAt')
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const rows = [];
+  for (const a of agents) {
+    const pendingPayout = Number(a.wallet?.pendingPayout || a.pendingEarnings || 0);
+    const balance = Number(a.wallet?.balance || 0);
+    const totalOwed = pendingPayout + balance;
+
+    if (totalOwed <= 0) continue;
+
+    let userDetails = null;
+    let bankDetails = null;
+    let walletBalance = 0;
+
+    if (a.userType === 'provider') {
+      const provider = await dB.providers.findById(a.userId).select('fullName email phoneNumber profilePhoto bankDetails walletId').lean();
+      if (provider) {
+        userDetails = {
+          fullName: provider.fullName || 'Agent',
+          email: provider.email || '',
+          phoneNumber: provider.phoneNumber || '',
+          profilePhoto: provider.profilePhoto || null,
+        };
+        bankDetails = provider.bankDetails || {};
+        const wallet = await dB.wallets.findOne({ owner: a.userId, ownerType: 'provider' }).lean();
+        walletBalance = wallet ? Number(wallet.balance || 0) : 0;
+      }
+    } else if (a.userType === 'customer') {
+      const customer = await dB.customers.findById(a.userId).select('fullName email phoneNumber profilePhoto walletId').lean();
+      if (customer) {
+        userDetails = {
+          fullName: customer.fullName || 'Agent',
+          email: customer.email || '',
+          phoneNumber: customer.phoneNumber || '',
+          profilePhoto: customer.profilePhoto || null,
+        };
+        const wallet = await dB.wallets.findOne({ owner: a.userId, ownerType: 'customer' }).lean();
+        walletBalance = wallet ? Number(wallet.balance || 0) : 0;
+      }
+    }
+
+    rows.push({
+      agentId: a._id.toString(),
+      userId: a.userId,
+      userType: a.userType,
+      agentCode: a.agentCode,
+      userDetails,
+      bankDetails,
+      walletBalance,
+      pendingPayout,
+      totalEarned: Number(a.wallet?.totalEarned || a.earnings || 0),
+      totalPaidOut: Number(a.wallet?.totalPaidOut || 0),
+      totalCustomerReferrals: a.totalCustomerReferrals || 0,
+      totalProviderReferrals: a.totalProviderReferrals || 0,
+      totalReferrals: (a.totalCustomerReferrals || 0) + (a.totalProviderReferrals || 0),
+      totalOwed,
+      isActive: a.isActive,
+      createdAt: a.createdAt,
+      referralCount: a.referrals ? a.referrals.length : 0,
+      unpaidReferrals: a.referrals ? a.referrals.filter((r) => !r.isPaid).length : 0,
+    });
+  }
+
+  rows.sort((a, b) => b.totalOwed - a.totalOwed);
+  const pageRows = rows.slice(skip, skip + limit);
+
+  return {
+    items: pageRows,
+    total: rows.length,
+    payoutTotal: rows.reduce((s, r) => s + r.totalOwed, 0),
+  };
+}
+
+const getAgentPayoutQueue = catchAsync(async (req, res) => {
+  const { page, limit, skip } = paging(req.query, { defLimit: 25, maxLimit: 100 });
+  const result = await collectReleasableAgents(limit, skip);
+  res.json({
+    items: result.items,
+    total: result.total,
+    page,
+    limit,
+    totalPages: Math.ceil(result.total / limit),
+    payoutTotal: result.payoutTotal,
+  });
+});
+
+async function releaseAgentPayoutOne(agentId, note, adminId) {
+  const agent = await dB.agents.findById(agentId);
+  if (!agent) throw new ApiError(httpStatus.NOT_FOUND, `Agent ${agentId} not found.`);
+
+  const pendingPayout = Number(agent.wallet?.pendingPayout || agent.pendingEarnings || 0);
+  const balance = Number(agent.wallet?.balance || 0);
+  const totalOwed = pendingPayout + balance;
+
+  if (totalOwed <= 0) {
+    return { agentId, skipped: true, reason: 'nothing owed', amount: 0 };
+  }
+
+  const io = require('../utils/io').getIo();
+  const now = new Date();
+  const reference = `AGENT_PAYOUT_${agentId}_${Date.now()}`;
+
+  if (agent.userType === 'provider') {
+    const provider = await dB.providers.findById(agent.userId);
+    if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found for agent payout.');
+
+    const bank = provider.bankDetails || {};
+    if (!bank.accountNumber || !bank.bankCode || !process.env.PAYSTACK_SECRET_KEY) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Provider agent has no verified bank details or Paystack is not configured.');
+    }
+
+    // ── STEP 1: Check Paystack available balance BEFORE transfer ──
+    const paystack = await require('../services/adminOps.service').getPaystackAvailableBalance();
+    if (paystack.unavailable) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Paystack balance check failed. Cannot process agent payout.');
+    }
+    if (Number(paystack.available) < totalOwed) {
+      throw new ApiError(
+        httpStatus.BAD_REQUEST,
+        `Insufficient Paystack balance. Available: ₦${paystack.available.toLocaleString()}, Required: ₦${totalOwed.toLocaleString()}`
+      );
+    }
+
+    // ── STEP 2: Attempt live Paystack transfer ──
+    let transfer;
+    try {
+      transfer = await require('../services/adminOps.service').transferToProviderBank({
+        amount: totalOwed,
+        bankCode: bank.bankCode,
+        accountNumber: bank.accountNumber,
+        accountName: bank.accountName || provider.fullName,
+        reason: `ServeNaija agent payout${note ? ` — ${note}` : ''}`,
+        reference,
+      });
+    } catch (e) {
+      // Transfer FAILED — do NOT zero agent earnings
+      throw new ApiError(httpStatus.BAD_REQUEST, `Paystack transfer failed: ${e.message}`);
+    }
+
+    // ── STEP 3: Transfer succeeded — now zero agent earnings ──
+    agent.wallet.pendingPayout = 0;
+    agent.wallet.balance = 0;
+    agent.wallet.totalPaidOut = Number(agent.wallet.totalPaidOut || 0) + totalOwed;
+    agent.pendingEarnings = 0;
+    agent.earnings = Number(agent.earnings || 0) + totalOwed;
+    if (agent.referrals) {
+      for (const ref of agent.referrals) {
+        if (!ref.isPaid) {
+          ref.isPaid = true;
+          ref.paidAt = now;
+        }
+      }
+    }
+    await agent.save();
+
+    if (io) {
+      io.to(`user_${agent.userId}`).emit('agent_payout_released', {
+        agentId: agent._id.toString(),
+        amount: totalOwed,
+        reference,
+        at: now,
+      });
+    }
+
+    notificationService.sendPushNotification({
+      userId: agent.userId,
+      actorType: 'provider',
+      title: 'Agent Payout Released',
+      body: `₦${totalOwed.toLocaleString()} has been paid to your bank account.`,
+      type: 'payment',
+      data: { agentId: agent._id.toString(), amount: totalOwed, reference },
+    }).catch(() => {});
+
+    return {
+      agentId,
+      userType: 'provider',
+      released: true,
+      amount: totalOwed,
+      reference,
+      method: 'bank_transfer',
+      transferStatus: 'success',
+    };
+  } else {
+    const customer = await dB.customers.findById(agent.userId);
+    if (!customer) throw new ApiError(httpStatus.NOT_FOUND, 'Customer not found for agent payout.');
+
+    const result = await customer.updateWalletBalance(
+      totalOwed,
+      'credit',
+      `ServeNaija agent payout${note ? ` — ${note}` : ''}`,
+      reference,
+      { agentId: agent._id.toString(), releasedBy: adminId, note }
+    );
+
+    agent.wallet.pendingPayout = 0;
+    agent.wallet.balance = 0;
+    agent.wallet.totalPaidOut = Number(agent.wallet.totalPaidOut || 0) + totalOwed;
+    agent.pendingEarnings = 0;
+    agent.earnings = Number(agent.earnings || 0) + totalOwed;
+    if (agent.referrals) {
+      for (const ref of agent.referrals) {
+        if (!ref.isPaid) {
+          ref.isPaid = true;
+          ref.paidAt = now;
+        }
+      }
+    }
+    await agent.save();
+
+    if (io) {
+      io.to(`user_${agent.userId}`).emit('agent_payout_released', {
+        agentId: agent._id.toString(),
+        amount: totalOwed,
+        reference,
+        at: now,
+      });
+    }
+
+    notificationService.sendPushNotification({
+      userId: agent.userId,
+      actorType: 'customer',
+      title: 'Agent Payout Credited to Wallet',
+      body: `₦${totalOwed.toLocaleString()} has been credited to your wallet.`,
+      type: 'payment',
+      data: { agentId: agent._id.toString(), amount: totalOwed, reference },
+    }).catch(() => {});
+
+    return {
+      agentId,
+      userType: 'customer',
+      released: true,
+      amount: totalOwed,
+      reference,
+      method: 'wallet_credit',
+      transactionId: result.transaction._id,
+    };
+  }
+}
+
+const releaseAgentPayout = catchAsync(async (req, res) => {
+  const { agentId, note } = req.body;
+  const adminId = req.user._id.toString();
+  const result = await releaseAgentPayoutOne(agentId, note || '', adminId);
+  res.json({
+    message: result.skipped ? 'Already processed; skipped.' : 'Agent payout released.',
+    result,
+  });
+});
+
+const releaseBulkAgentPayouts = catchAsync(async (req, res) => {
+  const { items, releaseAll, note } = req.body;
+  const adminId = req.user._id.toString();
+  let targets = items || [];
+
+  if (releaseAll) {
+    const all = await collectReleasableAgents(500);
+    targets = all.items.map((i) => i.agentId);
+  }
+
+  const results = [];
+  let payoutTotal = 0;
+  for (const agentId of targets) {
+    try {
+      const r = await releaseAgentPayoutOne(agentId, note || '', adminId);
+      results.push({ ...r, ok: true });
+      if (r.released) payoutTotal += Number(r.amount) || 0;
+    } catch (e) {
+      results.push({ agentId, ok: false, error: e.message });
+    }
+  }
+
+  const released = results.filter((r) => r.released);
+  res.json({
+    message: `Released ${released.length}/${targets.length}.`,
+    releasedTotal: payoutTotal,
+    releasedCount: released.length,
+    totalRequested: targets.length,
+    results,
+  });
+});
+
+// ─── 7c. Paystack transaction receipts ─────────────────────────────
+
+const getPaystackTransactions = catchAsync(async (req, res) => {
+  const { perPage = 50, page = 1, customer } = req.query;
+
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    throw new ApiError(httpStatus.INTERNAL_SERVER_ERROR, 'Paystack secret key not configured.');
+  }
+
+  const axios = require('axios');
+  const PAYSTACK_BASE = 'https://api.paystack.co';
+  const headers = { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` };
+
+  const { data } = await axios.get(`${PAYSTACK_BASE}/transaction`, {
+    headers,
+    params: { perPage, page, customer },
+    timeout: 30000,
+  });
+
+  if (!data.status) {
+    throw new ApiError(httpStatus.BAD_REQUEST, data.message || 'Failed to fetch Paystack transactions');
+  }
+
+  res.json({
+    success: true,
+    data: data.data,
+    meta: data.meta,
+  });
+});
+
 module.exports = {
   getDashboardV2,
   getFinanceOverview,
@@ -1088,4 +1556,8 @@ module.exports = {
   getUserActivity,
   getUserContact,
   sendDirectMessage,
+  getAgentPayoutQueue,
+  releaseAgentPayout,
+  releaseBulkAgentPayouts,
+  getPaystackTransactions,
 };
