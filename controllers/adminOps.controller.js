@@ -1240,23 +1240,28 @@ async function collectReleasableAgents(limit = 100, skip = 0) {
     let userDetails = null;
     let bankDetails = null;
     let walletBalance = 0;
+    let userResolved = false;
+    let ownerType = null;
 
-    if (a.userType === 'provider') {
-      const provider = await dB.providers.findById(a.userId).select('fullName email phoneNumber profilePhoto bankDetails walletId').lean();
-      if (provider) {
-        userDetails = {
-          fullName: provider.fullName || 'Agent',
-          email: provider.email || '',
-          phoneNumber: provider.phoneNumber || '',
-          profilePhoto: provider.profilePhoto || null,
-        };
-        bankDetails = provider.bankDetails || {};
-        const wallet = await dB.wallets.findOne({ owner: a.userId, ownerType: 'provider' }).lean();
-        walletBalance = wallet ? Number(wallet.balance || 0) : 0;
-      }
-    } else if (a.userType === 'customer') {
+    // ── Search BOTH collections — do not trust agent.userType ──
+    const provider = await dB.providers.findById(a.userId).select('fullName email phoneNumber profilePhoto bankDetails walletId').lean();
+    if (provider) {
+      userResolved = true;
+      ownerType = 'provider';
+      userDetails = {
+        fullName: provider.fullName || 'Agent',
+        email: provider.email || '',
+        phoneNumber: provider.phoneNumber || '',
+        profilePhoto: provider.profilePhoto || null,
+      };
+      bankDetails = provider.bankDetails || {};
+      const wallet = await dB.wallets.findOne({ owner: a.userId, ownerType: 'provider' }).lean();
+      walletBalance = wallet ? Number(wallet.balance || 0) : 0;
+    } else {
       const customer = await dB.customers.findById(a.userId).select('fullName email phoneNumber profilePhoto walletId').lean();
       if (customer) {
+        userResolved = true;
+        ownerType = 'customer';
         userDetails = {
           fullName: customer.fullName || 'Agent',
           email: customer.email || '',
@@ -1265,6 +1270,13 @@ async function collectReleasableAgents(limit = 100, skip = 0) {
         };
         const wallet = await dB.wallets.findOne({ owner: a.userId, ownerType: 'customer' }).lean();
         walletBalance = wallet ? Number(wallet.balance || 0) : 0;
+      } else {
+        userDetails = {
+          fullName: 'Unknown',
+          email: '',
+          phoneNumber: '',
+          profilePhoto: null,
+        };
       }
     }
 
@@ -1274,6 +1286,7 @@ async function collectReleasableAgents(limit = 100, skip = 0) {
       userType: a.userType,
       agentCode: a.agentCode,
       userDetails,
+      userResolved,
       bankDetails,
       walletBalance,
       pendingPayout,
@@ -1329,91 +1342,103 @@ async function releaseAgentPayoutOne(agentId, note, adminId) {
   const now = new Date();
   const reference = `AGENT_PAYOUT_${agentId}_${Date.now()}`;
 
-  if (agent.userType === 'provider') {
-    const provider = await dB.providers.findById(agent.userId);
-    if (!provider) throw new ApiError(httpStatus.NOT_FOUND, 'Provider not found for agent payout.');
+    // ── Search BOTH collections — do not trust agent.userType ──
+    let provider = await dB.providers.findById(agent.userId);
+    let userActorType = 'provider';
+    let userFound = provider;
+    let bank = null;
 
-    const bank = provider.bankDetails || {};
-    if (!bank.accountNumber || !bank.bankCode || !process.env.PAYSTACK_SECRET_KEY) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Provider agent has no verified bank details or Paystack is not configured.');
-    }
-
-    // ── STEP 1: Check Paystack available balance BEFORE transfer ──
-    const paystack = await require('../services/adminOps.service').getPaystackAvailableBalance();
-    if (paystack.unavailable) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Paystack balance check failed. Cannot process agent payout.');
-    }
-    if (Number(paystack.available) < totalOwed) {
-      throw new ApiError(
-        httpStatus.BAD_REQUEST,
-        `Insufficient Paystack balance. Available: ₦${paystack.available.toLocaleString()}, Required: ₦${totalOwed.toLocaleString()}`
-      );
-    }
-
-    // ── STEP 2: Attempt live Paystack transfer ──
-    let transfer;
-    try {
-      transfer = await require('../services/adminOps.service').transferToProviderBank({
-        amount: totalOwed,
-        bankCode: bank.bankCode,
-        accountNumber: bank.accountNumber,
-        accountName: bank.accountName || provider.fullName,
-        reason: `ServeNaija agent payout${note ? ` — ${note}` : ''}`,
-        reference,
-      });
-    } catch (e) {
-      // Transfer FAILED — do NOT zero agent earnings
-      throw new ApiError(httpStatus.BAD_REQUEST, `Paystack transfer failed: ${e.message}`);
-    }
-
-    // ── STEP 3: Transfer succeeded — now zero agent earnings ──
-    agent.wallet.pendingPayout = 0;
-    agent.wallet.balance = 0;
-    agent.wallet.totalPaidOut = Number(agent.wallet.totalPaidOut || 0) + totalOwed;
-    agent.pendingEarnings = 0;
-    agent.earnings = Number(agent.earnings || 0) + totalOwed;
-    if (agent.referrals) {
-      for (const ref of agent.referrals) {
-        if (!ref.isPaid) {
-          ref.isPaid = true;
-          ref.paidAt = now;
-        }
+    if (!provider) {
+      const customer = await dB.customers.findById(agent.userId);
+      if (!customer) {
+        throw new ApiError(httpStatus.NOT_FOUND, 'User not found for agent payout.');
       }
-    }
-    await agent.save();
-
-    if (io) {
-      io.to(`user_${agent.userId}`).emit('agent_payout_released', {
-        agentId: agent._id.toString(),
-        amount: totalOwed,
-        reference,
-        at: now,
-      });
+      userActorType = 'customer';
+      userFound = customer;
     }
 
-    notificationService.sendPushNotification({
-      userId: agent.userId,
-      actorType: 'provider',
-      title: 'Agent Payout Released',
-      body: `₦${totalOwed.toLocaleString()} has been paid to your bank account.`,
-      type: 'payment',
-      data: { agentId: agent._id.toString(), amount: totalOwed, reference },
-    }).catch(() => {});
+    if (userActorType === 'provider') {
+      bank = provider.bankDetails || {};
+      const hasBankDetails = bank.accountNumber && bank.bankCode;
+      const paystackConfigured = !!process.env.PAYSTACK_SECRET_KEY;
 
-    return {
-      agentId,
-      userType: 'provider',
-      released: true,
-      amount: totalOwed,
-      reference,
-      method: 'bank_transfer',
-      transferStatus: 'success',
-    };
-  } else {
-    const customer = await dB.customers.findById(agent.userId);
-    if (!customer) throw new ApiError(httpStatus.NOT_FOUND, 'Customer not found for agent payout.');
+      if (hasBankDetails && paystackConfigured) {
 
-    const result = await customer.updateWalletBalance(
+        // ── STEP 1: Check Paystack available balance BEFORE transfer ──
+        const paystack = await require('../services/adminOps.service').getPaystackAvailableBalance();
+        if (paystack.unavailable) {
+          throw new ApiError(httpStatus.BAD_REQUEST, 'Paystack balance check failed. Cannot process agent payout.');
+        }
+        if (Number(paystack.available) < totalOwed) {
+          throw new ApiError(
+            httpStatus.BAD_REQUEST,
+            `Insufficient Paystack balance. Available: ₦${paystack.available.toLocaleString()}, Required: ₦${totalOwed.toLocaleString()}`
+          );
+        }
+
+        // ── STEP 2: Attempt live Paystack transfer ──
+        let transfer;
+        try {
+          transfer = await require('../services/adminOps.service').transferToProviderBank({
+            amount: totalOwed,
+            bankCode: bank.bankCode,
+            accountNumber: bank.accountNumber,
+            accountName: bank.accountName || provider.fullName,
+            reason: `ServeNaija agent payout${note ? ` — ${note}` : ''}`,
+            reference,
+          });
+        } catch (e) {
+          // Transfer FAILED — do NOT zero agent earnings
+          throw new ApiError(httpStatus.BAD_REQUEST, `Paystack transfer failed: ${e.message}`);
+        }
+
+        // ── STEP 3: Transfer succeeded — now zero agent earnings ──
+        agent.wallet.pendingPayout = 0;
+        agent.wallet.balance = 0;
+        agent.wallet.totalPaidOut = Number(agent.wallet.totalPaidOut || 0) + totalOwed;
+        agent.pendingEarnings = 0;
+        agent.earnings = Number(agent.earnings || 0) + totalOwed;
+        if (agent.referrals) {
+          for (const ref of agent.referrals) {
+            if (!ref.isPaid) {
+              ref.isPaid = true;
+              ref.paidAt = now;
+            }
+          }
+        }
+        await agent.save();
+
+        if (io) {
+          io.to(`user_${agent.userId}`).emit('agent_payout_released', {
+            agentId: agent._id.toString(),
+            amount: totalOwed,
+            reference,
+            at: now,
+          });
+        }
+
+        notificationService.sendPushNotification({
+          userId: agent.userId,
+          actorType: 'provider',
+          title: 'Agent Payout Released',
+          body: `₦${totalOwed.toLocaleString()} has been paid to your bank account.`,
+          type: 'payment',
+          data: { agentId: agent._id.toString(), amount: totalOwed, reference },
+        }).catch(() => {});
+
+        return {
+          agentId,
+          userType: 'provider',
+          released: true,
+          amount: totalOwed,
+          reference,
+          method: 'bank_transfer',
+          transferStatus: 'success',
+        };
+    }
+}
+
+    const result = await userFound.updateWalletBalance(
       totalOwed,
       'credit',
       `ServeNaija agent payout${note ? ` — ${note}` : ''}`,
@@ -1456,14 +1481,13 @@ async function releaseAgentPayoutOne(agentId, note, adminId) {
 
     return {
       agentId,
-      userType: 'customer',
+      userType: userActorType,
       released: true,
       amount: totalOwed,
       reference,
       method: 'wallet_credit',
       transactionId: result.transaction._id,
     };
-  }
 }
 
 const releaseAgentPayout = catchAsync(async (req, res) => {
