@@ -397,6 +397,25 @@ const sendMagicLink = catchAsync(async (req, res) => {
     });
   }
 });
+
+const resetPassword = catchAsync(async (req, res) => {
+  const { email, token, password, type } = req.body;
+
+  if (!email || !token || !password || !type) {
+    return res.status(httpStatus.BAD_REQUEST).json({
+      status: false,
+      message: 'Email, token, password and actor are required.',
+    });
+  }
+
+  await authService.resetPassword(token, password, type);
+
+  res.status(httpStatus.OK).json({
+    status: true,
+    message: 'Password reset successfully.',
+  });
+});
+
 module.exports = {
   registerUser,
   registerProvider,
@@ -408,5 +427,6 @@ module.exports = {
   logout,
   refreshTokens,
   forgotPassword,
-  sendMagicLink
+  sendMagicLink,
+  resetPassword
 };

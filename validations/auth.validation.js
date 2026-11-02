@@ -152,14 +152,14 @@ const forgotPassword = {
       'string.empty': 'Email is required to reset password.',
       'string.email': 'Email must be a valid email address.',
     }),
-    actor: Joi.string().valid('provider', 'customer').required().messages({
+    type: Joi.string().valid('provider', 'customer').required().messages({
       'any.required': 'Actor is required to reset password.',
       'string.empty': 'Actor is required to reset password.',
       'any.only': 'Actor must be either provider or customer.',
     }),
-    verificationCode: Joi.string().required().messages({
-      'any.required': 'Verification code is required.',
-      'string.empty': 'Verification code is required.',
+    token: Joi.string().required().messages({
+      'any.required': 'Reset token is required.',
+      'string.empty': 'Reset token is required.',
     }),
     password: Joi.string().required().custom(password).messages({
       'any.required': 'Password is required.',
@@ -167,9 +167,7 @@ const forgotPassword = {
     }),
     confirmPassword: Joi.any()
       .valid(Joi.ref('password'))
-      .required()
       .messages({
-        'any.required': 'Confirm password is required.',
         'any.only': 'Confirm password must match password.',
       }),
   }),

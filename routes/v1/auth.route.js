@@ -66,4 +66,8 @@ router.route('/send-magic-link')
     .post(allowedMethod,  authController.sendMagicLink)
     .all(unAllowedMethod)
 
+router.route('/reset-password')
+    .post(allowedMethod, validate(authValidation.resetPassword), authController.resetPassword)
+    .all(unAllowedMethod)
+
 module.exports = router;
