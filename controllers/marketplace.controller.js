@@ -534,14 +534,12 @@ const createOrder = catchAsync(async (req, res) => {
           throw new ApiError(httpStatus.BAD_REQUEST, 'Payment was not successful. Please try again.');
         }
         const paidAmount = (tx.amount || 0) / 100;
-        // Customers pay Paystack charges on top of the order total, so the paid
-        // amount is the total + the Paystack fee (1.5% + ₦100, capped ₦2,000).
-        // Accept anything from the order total up to total + the applicable fee.
-        const paystackFee = Math.min(Math.round(total * 0.015) + 100, 2000);
-        if (paidAmount < total || paidAmount > total + paystackFee) {
+        // Customer absorbs Paystack charges: accept as long as the amount paid
+        // is not less than the order total.
+        if (paidAmount < total) {
           throw new ApiError(
             httpStatus.BAD_REQUEST,
-            `Payment amount mismatch. Expected ₦${total.toLocaleString()} (up to ₦${(total + paystackFee).toLocaleString()} with Paystack charges), got ₦${paidAmount.toLocaleString()}.`
+            `Payment amount mismatch. Expected at least ₦${total.toLocaleString()}, got ₦${paidAmount.toLocaleString()}.`
           );
         }
       } catch (error) {
