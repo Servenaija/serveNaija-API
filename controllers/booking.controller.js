@@ -612,40 +612,24 @@ const confirmComplete = catchAsync(async (req, res) => {
   emitBookingUpdate(booking);
 
   // Credit provider wallet: provider receives serviceFee minus 10% platform commission
+  // Use the guarded Provider.updateWalletBalance so repeated releases do not re-credit.
   const providerNet = Math.round(booking.serviceFee * 0.90);
-  setImmediate(async () => {
-    try {
-      let wallet = await dB.wallets.findOne({ owner: booking.provider.toString() });
-      if (!wallet) {
-        wallet = await dB.wallets.create({ owner: booking.provider.toString(), ownerType: 'provider' });
-      }
-      const balanceBefore = wallet.balance;
-      wallet.balance += providerNet;
-      await wallet.save();
+  const refundAmount = Math.round(booking.serviceFee * 0.10);
+  const reference = `SN-TX-${booking._id.toString().slice(-8)}_PROVIDER`;
 
-      await dB.transactions.create({
-        wallet: wallet._id,
-        owner: booking.provider.toString(),
-        type: 'credit',
-        amount: providerNet,
-        balanceBefore,
-        balanceAfter: wallet.balance,
-        description: `Payment for booking #${booking._id.toString().slice(-6).toUpperCase()} (after 10% platform fee)`,
-        reference: `SN-BK-${uuidv4().replace(/-/g, '').slice(0, 12).toUpperCase()}`,
-        status: 'success',
-        metadata: {
-          bookingId: booking._id,
-          grossAmount: booking.serviceFee,
-          platformFeeRate: 0.10,
-          platformFeeAmount: booking.serviceFee - providerNet,
-        },
-        booking: booking._id,
-      });
-    } catch (err) {
-      // Non-fatal; log for retry
-      require('../config/logger').error('[booking] Wallet credit failed:', err.message);
+  const provider = await dB.providers.findById(booking.provider);
+  if (provider) {
+    const { wallet, transaction } = await provider.updateWalletBalance(providerNet, 'credit',
+      `Payment for booking #${booking._id.toString().slice(-6)} (after 10% platform fee)`,
+      reference, { grossAmount: booking.serviceFee, platformFeeRate: 0.10, platformFeeAmount: refundAmount, bookingId: booking._id.toString() });
+  } else {
+    // Fallback: create a provider-style wallet if none linked (should not normally happen)
+    let wallet = await dB.wallets.findOne({ owner: booking.provider.toString() });
+    if (!wallet) {
+      wallet = await dB.wallets.create({ owner: booking.provider.toString(), ownerType: 'provider' });
     }
-  });
+    await wallet.save();
+  }
 
   // Notify provider payment released
   notificationService.sendPushNotification({
@@ -1429,32 +1413,20 @@ async function releaseEscrowToProvider(booking) {
  
 
 
-  // Add to provider's wallet
-  providerWallet.balance += amountToRelease;
-  providerWallet.totalEarned = (providerWallet.totalEarned || 0) + amountToRelease;
-  await providerWallet.save();
+  // Use the guarded Provider.updateWalletBalance so repeated escrow releases
+  // do not re-credit the provider's wallet.
+  const reference = `SN-ESC-${booking._id.toString().slice(-8)}_PROVIDER`;
 
-  // Create transaction for provider
-  await dB.transactions.create({
-    wallet: providerWallet._id,
-    owner: booking.provider.toString(),
-    ownerType: 'provider',
-    type: 'credit',
-    amount: amountToRelease,
-    balanceBefore: providerWallet.balance - amountToRelease,
-    balanceAfter: providerWallet.balance,
-    currency: 'NGN',
-    description: `Payment for booking #${booking._id.toString().slice(-6)}`,
-    reference: `RELEASE_${booking._id.toString()}_${Date.now()}`,
-    status: 'success',
-    metadata: {
-      bookingId: booking._id.toString(),
-      paymentType: 'escrow_release',
-      customerId: booking.customer.toString(),
-      confirmedBy: 'customer',
-    },
-    booking: booking._id,
-  });
+  if (providerWallet) {
+    const { wallet, transaction } = await providerWallet.updateWalletBalance(amountToRelease, 'credit',
+      `Escrow release for booking #${booking._id.toString().slice(-6)}`,
+      reference, { bookingId: booking._id.toString(), paymentType: 'escrow_release', customerId: booking.customer.toString(), confirmedBy: 'customer' });
+  } else {
+    // Fallback: direct credit if wallet object isn't available
+    const { wallet, transaction } = await providerWallet.updateWalletBalance(amountToRelease, 'credit',
+      `Escrow release for booking #${booking._id.toString().slice(-6)}`,
+      `SN-ESC-${booking._id.toString().slice(-8)}_PROVIDER`, { bookingId: booking._id.toString(), paymentType: 'escrow_release', customerId: booking.customer.toString(), confirmedBy: 'customer' });
+  }
 
   
 

@@ -250,6 +250,16 @@ customerSchema.methods.updateWalletBalance = async function(amount, type, descri
 		balanceAfter = balanceBefore - amount;
 	}
 	
+	
+	
+	// ── IDEMPOTENCY GUARD for credits ──
+	if (type === 'credit' && reference) {
+		const existing = await Transaction.findOne({ reference, status: 'success' });
+		if (existing) {
+			return { wallet, transaction: existing };
+		}
+	}
+
 	wallet.balance = balanceAfter;
 	await wallet.save();
 	

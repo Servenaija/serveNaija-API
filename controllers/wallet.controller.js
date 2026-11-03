@@ -69,23 +69,9 @@ const fundWallet = catchAsync(async (req, res) => {
     throw new ApiError(httpStatus.BAD_REQUEST, 'Payment amount does not match.');
   }
 
-  const wallet = await getOrCreateWallet(req.user);
-  const balanceBefore = wallet.balance;
-  wallet.balance += verification.amount;
-  await wallet.save();
-
-  await dB.transactions.create({
-    wallet: wallet._id,
-    owner: req.user._id.toString(),
-    type: 'credit',
-    amount: verification.amount,
-    balanceBefore,
-    balanceAfter: wallet.balance,
-    description: 'Wallet top-up via Paystack.',
-    reference: paystackReference,
-    status: 'success',
-    metadata: verification,
-  });
+  const { wallet, transaction } = await getOrCreateWallet(req.user).then(w => w.updateWalletBalance(
+    verification.amount, 'credit', 'Wallet top-up via Paystack.',
+    paystackReference, { paymentMethod: 'paystack', ...verification.metadata }));
 
   notificationService.sendPushNotification({
     userId: req.user._id.toString(),
@@ -179,24 +165,13 @@ const paystackWebhook = catchAsync(async (req, res) => {
 
     if (purpose === 'wallet_fund' && userId) {
       const existing = await dB.transactions.findOne({ reference: tx.reference });
-      if (!existing) {
-        const wallet = await dB.wallets.findOne({ owner: userId });
-        if (wallet) {
-          wallet.balance += tx.amount / 100;
-          await wallet.save();
-
-          await dB.transactions.create({
-            wallet: wallet._id,
-            owner: userId,
-            type: 'credit',
-            amount: tx.amount / 100,
-            description: 'Wallet top-up via Paystack (webhook).',
-            reference: tx.reference,
-            status: 'success',
-            metadata: tx,
-          });
-        }
+      if (existing) {
+        // Already credited; skip to avoid duplicate
+        return;
       }
+      const { wallet, transaction } = await dB.wallets.findOne({ owner: userId }).then(w => w.updateWalletBalance(
+        tx.amount / 100, 'credit', 'Wallet top-up via Paystack (webhook).',
+        tx.reference, { paymentMethod: 'paystack', event: event.event, ...tx.metadata }));
     }
   }
 
