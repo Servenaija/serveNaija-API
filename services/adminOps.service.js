@@ -59,5 +59,49 @@ async function transferToProviderBank({ amount, bankCode, accountNumber, account
   return transferRes.data.data;
 }
 
-module.exports = { getPaystackAvailableBalance, transferToProviderBank };
+/**
+ * Resolve a Paystack bank code from a bank name.
+ * Fetches Paystack's NGN bank list and matches by name (case-insensitive, trimmed).
+ * Returns null if no match is found.
+ */
+async function resolveBankCode(bankName) {
+  if (!PAYSTACK_SECRET) return null;
+  if (!bankName || !bankName.trim()) return null;
+  try {
+    const { data } = await axios.get(`${PAYSTACK_BASE}/bank?country=nigeria&perPage=100`, {
+      headers: paystackHeaders(),
+      timeout: 15000,
+    });
+    const banks = data?.data || [];
+    const target = bankName.trim().toLowerCase();
+    // Exact match first
+    const exact = banks.find((b) => String(b.name || '').trim().toLowerCase() === target);
+    if (exact) return exact.code;
+    // Fallback: contains match
+    const contains = banks.find((b) => String(b.name || '').trim().toLowerCase().includes(target));
+    if (contains) return contains.code;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Check the final status of a Paystack transfer by reference.
+ * Returns the transfer object or null.
+ */
+async function verifyTransfer(reference) {
+  if (!PAYSTACK_SECRET) return null;
+  try {
+    const { data } = await axios.get(`${PAYSTACK_BASE}/transfer/${encodeURIComponent(reference)}`, {
+      headers: paystackHeaders(),
+      timeout: 15000,
+    });
+    return data.data || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+module.exports = { getPaystackAvailableBalance, transferToProviderBank, resolveBankCode, verifyTransfer };
 

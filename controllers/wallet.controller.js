@@ -156,6 +156,166 @@ const paystackWebhook = catchAsync(async (req, res) => {
   }
 
   const event = req.body;
+
+  // ─── Handle Paystack TRANSFER events (payouts to providers/agents) ───
+  if (event.event === 'transfer.success' || event.event === 'transfer.failed') {
+    const tx = event.data;
+    const reference = tx.reference;
+
+    const Withdrawal = dB.Withdrawal || require('../models/Withdrawal');
+    const withdrawal = await Withdrawal.findOne({ transferReference: reference }).lean();
+
+    if (!withdrawal) {
+      return res.sendStatus(200);
+    }
+
+    // Idempotency: skip if already processed
+    if (withdrawal.status === 'completed' || withdrawal.status === 'failed') {
+      return res.sendStatus(200);
+    }
+
+    if (event.event === 'transfer.success') {
+      const provider = await dB.providers.findById(withdrawal.provider);
+      const wallet = await dB.wallets.findOne({ owner: withdrawal.provider, ownerType: 'provider', isActive: true });
+
+      if (wallet) {
+        const balanceBefore = Number(wallet.balance) || 0;
+        wallet.balance = 0;
+        await wallet.save();
+
+        await dB.transactions.create({
+          wallet: wallet._id,
+          owner: withdrawal.provider,
+          ownerType: 'provider',
+          type: 'withdrawal',
+          amount: withdrawal.amount,
+          balanceBefore,
+          balanceAfter: 0,
+          currency: wallet.currency || 'NGN',
+          description: `Admin payout to ${withdrawal.accountName || ''} ${withdrawal.accountNumber || ''} (reference: ${reference})`,
+          reference,
+          status: 'success',
+          metadata: {
+            bankDetails: {
+              bankName: withdrawal.bankName,
+              bankCode: withdrawal.bankCode,
+              accountNumber: withdrawal.accountNumber,
+              accountName: withdrawal.accountName,
+            },
+            transfer: tx,
+            breakdown: withdrawal.metadata?.breakdown || {},
+            bookingIds: withdrawal.metadata?.bookingIds || [],
+            orderIds: withdrawal.metadata?.orderIds || [],
+            releasedBy: withdrawal.metadata?.releasedBy || null,
+            note: withdrawal.metadata?.note || null,
+          },
+        });
+      }
+
+      const bookingIds = (withdrawal.metadata?.bookingIds || []).filter(Boolean);
+      if (bookingIds.length) {
+        await dB.bookings.updateMany(
+          { _id: { $in: bookingIds }, paymentStatus: 'held' },
+          { $set: { paymentStatus: 'released' } }
+        );
+      }
+
+      const orderIds = (withdrawal.metadata?.orderIds || []).filter(Boolean);
+      if (orderIds.length) {
+        await dB.orders.updateMany(
+          { _id: { $in: orderIds }, paymentStatus: 'held' },
+          { $set: { paymentStatus: 'released', escrowReleasedAt: new Date() } }
+        );
+      }
+
+      // ── Agent payout: zero agent wallet/earnings ──
+      if (withdrawal.agent) {
+        try {
+          const Agent = dB.Agent || require('../models/Agent');
+          const agent = await Agent.findById(withdrawal.agent);
+          if (agent) {
+            agent.wallet.pendingPayout = 0;
+            agent.wallet.balance = 0;
+            agent.wallet.totalPaidOut = Number(agent.wallet.totalPaidOut || 0) + withdrawal.amount;
+            agent.pendingEarnings = 0;
+            agent.earnings = Number(agent.earnings || 0) + withdrawal.amount;
+            if (agent.referrals) {
+              for (const ref of agent.referrals) {
+                if (!ref.isPaid) {
+                  ref.isPaid = true;
+                  ref.paidAt = new Date();
+                }
+              }
+            }
+            await agent.save();
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+
+      await Withdrawal.findByIdAndUpdate(withdrawal._id, {
+        status: 'completed',
+        moneySent: true,
+        transferStatus: 'success',
+        processedAt: new Date(),
+      });
+
+      if (provider) {
+        try {
+          const io = require('../utils/io').getIo();
+          if (io) {
+            io.to(`user_${withdrawal.provider}`).emit('payout_released', {
+              providerId: withdrawal.provider,
+              amount: withdrawal.amount,
+              reference,
+              at: new Date(),
+            });
+          }
+          const notificationService = require('../services/notification.service');
+          notificationService.sendPushNotification({
+            userId: withdrawal.provider,
+            actorType: 'provider',
+            title: 'Payout Released',
+            body: `₦${withdrawal.amount.toLocaleString()} has been transferred to your bank account ${withdrawal.accountNumber}.`,
+            type: 'payment',
+            data: { amount: withdrawal.amount, reference, transfer: tx },
+          }).catch(() => {});
+        } catch (_) { /* non-fatal */ }
+      }
+      return res.sendStatus(200);
+    } else if (event.event === 'transfer.failed') {
+      await Withdrawal.findByIdAndUpdate(withdrawal._id, {
+        status: 'failed',
+        moneySent: false,
+        transferStatus: 'failed',
+        lastError: tx?.gateway_response || 'Transfer failed',
+        processedAt: new Date(),
+      });
+
+      try {
+        const io = require('../utils/io').getIo();
+        if (io) {
+          io.to(`user_${withdrawal.provider}`).emit('payout_failed', {
+            providerId: withdrawal.provider,
+            amount: withdrawal.amount,
+            reference,
+            error: tx?.gateway_response || 'Transfer failed',
+            at: new Date(),
+          });
+        }
+        const notificationService = require('../services/notification.service');
+        notificationService.sendPushNotification({
+          userId: withdrawal.provider,
+          actorType: 'provider',
+          title: 'Payout Failed',
+          body: `Your payout of ₦${withdrawal.amount.toLocaleString()} could not be completed. Please contact support.`,
+          type: 'payment',
+          data: { amount: withdrawal.amount, reference },
+        }).catch(() => {});
+      } catch (_) { /* non-fatal */ }
+      return res.sendStatus(200);
+    }
+  }
+
   // Handle charge.success for wallet funding
   if (event.event === 'charge.success') {
     const tx = event.data;

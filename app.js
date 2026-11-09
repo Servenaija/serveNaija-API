@@ -223,14 +223,14 @@ app.use('/filler', express.static(path.join(__dirname, 'public/uploads')));
 app.use('/v1.0', indexRouterV1);
 
 
-// webhook route
-app.post('/webhook/paystack', (req, res) => {
-  const event = req.body;
-  if (event.event === 'charge.success') {
-    const tx = event.data;
-    console.log(`Payment of ${tx.amount / 100} received from ${tx.customer.email}`);
+// webhook route — delegates to wallet controller (handles charge + transfer events)
+app.post('/webhook/paystack', async (req, res) => {
+  try {
+    const walletController = require('./controllers/wallet.controller');
+    await walletController.paystackWebhook(req, res);
+  } catch (_) {
+    res.sendStatus(200);
   }
-  res.sendStatus(200);
 });
 app.use(jsonHeader);
 

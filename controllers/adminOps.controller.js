@@ -681,11 +681,74 @@ async function releaseOne(targetType, targetId, note, adminId) {
     }
 
     const bank = wallet?.bankDetails?.accountNumber ? wallet.bankDetails : provider.bankDetails || {};
-    if (!bank.accountNumber || !bank.bankCode || !process.env.PAYSTACK_SECRET_KEY) {
-      throw new ApiError(httpStatus.BAD_REQUEST, 'Provider has no verified bank details or Paystack is not configured.');
+
+    // Auto-resolve Paystack bank code from bank name if not already stored.
+    // Providers should never need to know their bank code — we look it up from Paystack.
+    if (bank.accountNumber && !bank.bankCode && bank.bankName && process.env.PAYSTACK_SECRET_KEY) {
+      const resolvedCode = await adminOpsService.resolveBankCode(bank.bankName);
+      if (resolvedCode) {
+        bank.bankCode = resolvedCode;
+        // Persist it so future payouts don't need to re-resolve
+        try {
+          if (wallet && wallet.bankDetails) {
+            wallet.bankDetails.bankCode = resolvedCode;
+            await wallet.save();
+          } else if (provider) {
+            provider.bankDetails = provider.bankDetails || {};
+            provider.bankDetails.bankCode = resolvedCode;
+            await provider.save();
+          }
+        } catch (_) { /* non-fatal */ }
+      }
+    }
+
+    if (!bank.accountNumber) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Provider has no bank account number on file.');
+    }
+    if (!bank.bankCode) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Could not resolve bank code for the provider\'s bank. Please contact support.');
+    }
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      throw new ApiError(httpStatus.BAD_REQUEST, 'Paystack is not configured. Set PAYSTACK_SECRET_KEY.');
     }
 
     const reference = `ADMIN_PAYOUT_${providerId}_${Date.now()}`;
+    const now = new Date();
+
+    // ── STEP 1: Create withdrawal record as PENDING before initiating transfer ──
+    // Wallet is NOT zeroed yet — it will be zeroed only when Paystack webhook confirms transfer.success.
+    let withdrawal = null;
+    if (WithdrawalModel) {
+      try {
+        withdrawal = await WithdrawalModel.create({
+          provider: providerId,
+          amount: totalAmount,
+          amountToSend: totalAmount,
+          bankName: bank.bankName || '',
+          bankCode: bank.bankCode || '',
+          accountNumber: bank.accountNumber || '',
+          accountName: bank.accountName || provider.fullName,
+          reference,
+          status: 'pending',
+          approved: 'pending',
+          moneySent: false,
+          transferReference: reference,
+          transferStatus: 'pending',
+          lastAttemptAt: now,
+          requestedAt: now,
+          metadata: {
+            adminId,
+            note,
+            breakdown: { wallet: walletAmount, bookingEscrow, orderEscrow },
+            bookingIds: heldBookings.map((b) => b._id.toString()),
+            orderIds: heldOrders.map((o) => o._id.toString()),
+          },
+        });
+      } catch (e) {
+        // Non-fatal: continue with payout even if withdrawal record creation fails
+        console.error('[Withdrawal] create failed:', e.message);
+      }
+    }
 
     // ── STEP 2: Attempt live Paystack transfer ──
     let transfer;
@@ -699,75 +762,39 @@ async function releaseOne(targetType, targetId, note, adminId) {
         reference,
       });
     } catch (e) {
-      // Transfer FAILED — do NOT zero wallet, do NOT mark as released
+      // Transfer FAILED — mark withdrawal as failed, wallet untouched
+      if (withdrawal) {
+        try {
+          withdrawal.status = 'failed';
+          withdrawal.transferStatus = 'failed';
+          withdrawal.lastError = e.message;
+          withdrawal.lastAttemptAt = new Date();
+          await withdrawal.save();
+        } catch (_) { /* non-fatal */ }
+      }
       throw new ApiError(httpStatus.BAD_REQUEST, `Paystack transfer failed: ${e.message}`);
     }
 
-    const now = new Date();
-
-    // ── STEP 3: Transfer succeeded — now zero wallet and mark released ──
-    const balanceBefore = walletAmount;
-    if (wallet) {
-      wallet.balance = 0;
-      await wallet.save();
+    // ── STEP 3: Paystack ACCEPTED the transfer — mark as processing ──
+    // Do NOT zero wallet yet. Wallet will be zeroed and escrows released
+    // only when the Paystack webhook confirms transfer.success.
+    if (withdrawal) {
+      try {
+        withdrawal.status = 'processing';
+        withdrawal.transferStatus = transfer?.status || 'processing';
+        withdrawal.transferId = transfer?.transfer_id || transfer?.recipient || '';
+        withdrawal.transferReference = transfer?.reference || reference;
+        withdrawal.lastAttemptAt = new Date();
+        await withdrawal.save();
+      } catch (_) { /* non-fatal */ }
     }
-
-    // Mark every held booking escrow as released
-    const bookingIds = heldBookings.map((b) => b._id);
-    if (bookingIds.length) {
-      await dB.bookings.updateMany(
-        { _id: { $in: bookingIds }, paymentStatus: 'held' },
-        { $set: { paymentStatus: 'released' }, $push: { timeline: { status: 'released', note: `Admin payout release${note ? ` — ${note}` : ''}`, timestamp: now } } }
-      );
-    }
-
-    // Mark every held order escrow as released
-    const orderIds = heldOrders.map((o) => o._id);
-    if (orderIds.length) {
-      await dB.orders.updateMany(
-        { _id: { $in: orderIds }, paymentStatus: 'held' },
-        { $set: { paymentStatus: 'released', escrowReleasedAt: now } }
-      );
-    }
-
-    // One withdrawal transaction for the full amount (ledger integrity)
-    const ledgerWallet = wallet || (await provider.getWallet());
-    const txn = await dB.transactions.create({
-      wallet: ledgerWallet._id,
-      owner: providerId,
-      ownerType: 'provider',
-      type: 'withdrawal',
-      amount: totalAmount,
-      balanceBefore,
-      balanceAfter: 0,
-      currency: ledgerWallet.currency || 'NGN',
-      description: `Admin payout to ${bank.accountName || provider.fullName} ${bank.accountNumber || ''} (wallet ${balanceBefore} + bookings ${bookingEscrow} + orders ${orderEscrow})${note ? ` — ${note}` : ''}`,
-      reference,
-      status: 'success',
-      metadata: {
-        releasedBy: adminId, bankDetails: bank, transfer, note,
-        breakdown: { wallet: balanceBefore, bookingEscrow, orderEscrow },
-        bookingIds: bookingIds.map(String), orderIds: orderIds.map(String),
-      },
-    });
-
-    const io = getIo();
-    if (io) {
-      io.to(`user_${providerId}`).emit('payout_released', { providerId, amount: totalAmount, reference, transfer, at: now });
-      io.to('admin_support').emit('payout_released', { providerId, amount: totalAmount, reference, at: now });
-    }
-    notificationService.sendPushNotification({
-      userId: providerId, actorType: 'provider',
-      title: 'Payout Released',
-      body: `₦${totalAmount.toLocaleString()} has been transferred to your bank account ${bank.accountNumber}.`,
-      type: 'payment', data: { amount: totalAmount, reference, transfer },
-    }).catch(() => {});
 
     return {
-      targetType, targetId, released: true, amount: totalAmount, transactionId: txn._id,
-      breakdown: { wallet: balanceBefore, bookingEscrow, orderEscrow },
-      bankDetails: bank, transfer,
-      transferStatus: 'success',
+      targetType, targetId, released: false, status: 'pending', amount: totalAmount, reference,
+      transfer, transferStatus: transfer?.status || 'pending',
+      breakdown: { wallet: walletAmount, bookingEscrow, orderEscrow },
+      bankDetails: bank,
+      message: 'Payout initiated. Funds will be released once Paystack confirms the transfer.',
     };
   }
 
@@ -1376,7 +1403,39 @@ async function releaseAgentPayoutOne(agentId, note, adminId) {
           );
         }
 
-        // ── STEP 2: Attempt live Paystack transfer ──
+        // ── STEP 2: Create withdrawal record as PENDING before initiating transfer ──
+        let withdrawal = null;
+        if (WithdrawalModel) {
+          try {
+            withdrawal = await WithdrawalModel.create({
+              agent: agent._id,
+              provider: agent.userId,
+              amount: totalOwed,
+              amountToSend: totalOwed,
+              bankName: bank.bankName || '',
+              bankCode: bank.bankCode || '',
+              accountNumber: bank.accountNumber || '',
+              accountName: bank.accountName || provider.fullName,
+              reference,
+              status: 'pending',
+              approved: 'pending',
+              moneySent: false,
+              transferReference: reference,
+              transferStatus: 'pending',
+              lastAttemptAt: now,
+              requestedAt: now,
+              metadata: {
+                agentId: agent._id.toString(),
+                adminId,
+                note,
+              },
+            });
+          } catch (e) {
+            console.error('[Withdrawal] create failed:', e.message);
+          }
+        }
+
+        // ── STEP 3: Attempt live Paystack transfer ──
         let transfer;
         try {
           transfer = await require('../services/adminOps.service').transferToProviderBank({
@@ -1388,52 +1447,43 @@ async function releaseAgentPayoutOne(agentId, note, adminId) {
             reference,
           });
         } catch (e) {
-          // Transfer FAILED — do NOT zero agent earnings
+          // Transfer FAILED — mark withdrawal as failed, agent earnings untouched
+          if (withdrawal) {
+            try {
+              withdrawal.status = 'failed';
+              withdrawal.transferStatus = 'failed';
+              withdrawal.lastError = e.message;
+              withdrawal.lastAttemptAt = new Date();
+              await withdrawal.save();
+            } catch (_) { /* non-fatal */ }
+          }
           throw new ApiError(httpStatus.BAD_REQUEST, `Paystack transfer failed: ${e.message}`);
         }
 
-        // ── STEP 3: Transfer succeeded — now zero agent earnings ──
-        agent.wallet.pendingPayout = 0;
-        agent.wallet.balance = 0;
-        agent.wallet.totalPaidOut = Number(agent.wallet.totalPaidOut || 0) + totalOwed;
-        agent.pendingEarnings = 0;
-        agent.earnings = Number(agent.earnings || 0) + totalOwed;
-        if (agent.referrals) {
-          for (const ref of agent.referrals) {
-            if (!ref.isPaid) {
-              ref.isPaid = true;
-              ref.paidAt = now;
-            }
-          }
+        // ── STEP 4: Paystack ACCEPTED the transfer — mark as processing ──
+        // Do NOT zero agent earnings yet. Wallet will be zeroed and earnings released
+        // only when the Paystack webhook confirms transfer.success.
+        if (withdrawal) {
+          try {
+            withdrawal.status = 'processing';
+            withdrawal.transferStatus = transfer?.status || 'processing';
+            withdrawal.transferId = transfer?.transfer_id || transfer?.recipient || '';
+            withdrawal.transferReference = transfer?.reference || reference;
+            withdrawal.lastAttemptAt = new Date();
+            await withdrawal.save();
+          } catch (_) { /* non-fatal */ }
         }
-        await agent.save();
-
-        if (io) {
-          io.to(`user_${agent.userId}`).emit('agent_payout_released', {
-            agentId: agent._id.toString(),
-            amount: totalOwed,
-            reference,
-            at: now,
-          });
-        }
-
-        notificationService.sendPushNotification({
-          userId: agent.userId,
-          actorType: 'provider',
-          title: 'Agent Payout Released',
-          body: `₦${totalOwed.toLocaleString()} has been paid to your bank account.`,
-          type: 'payment',
-          data: { agentId: agent._id.toString(), amount: totalOwed, reference },
-        }).catch(() => {});
 
         return {
           agentId,
           userType: 'provider',
-          released: true,
+          released: false,
+          status: 'pending',
           amount: totalOwed,
           reference,
           method: 'bank_transfer',
-          transferStatus: 'success',
+          transferStatus: transfer?.status || 'pending',
+          message: 'Payout initiated. Funds will be released once Paystack confirms the transfer.',
         };
     }
 }
