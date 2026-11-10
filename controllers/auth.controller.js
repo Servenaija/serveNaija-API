@@ -399,7 +399,7 @@ const sendMagicLink = catchAsync(async (req, res) => {
 });
 
 const resetPassword = catchAsync(async (req, res) => {
-  const { email, token, password, type } = req.body;
+  const { email, token, password, type, confirmPassword } = req.body;
 
   if (!email || !token || !password || !type) {
     return res.status(httpStatus.BAD_REQUEST).json({
