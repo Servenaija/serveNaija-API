@@ -70,9 +70,9 @@ const refreshAuth = async (refreshToken, actor = "customer") => {
 
     let user;
     if (actor === "customer") {
-      user = await userService.getUserById(refreshTokenDoc.user);
+      user = await userService.getUserById(refreshTokenDoc.user?.id);
     } else if (actor === "provider") {
-      user = await userService.getProviderById(refreshTokenDoc.user);
+      user = await userService.getProviderById(refreshTokenDoc.user?.id);
     } else {
       throw new Error('Unsupported actor');
     }
@@ -83,7 +83,7 @@ const refreshAuth = async (refreshToken, actor = "customer") => {
 
     await refreshTokenDoc.delete();
 
-    return tokenService.generateAuthTokens({ id: user._id.toString(), actor });
+    return tokenService.generateAuthTokens({ id: user._id, actor });
   } catch (error) {
     throw new ApiError(httpStatus.UNAUTHORIZED, "Please authenticate");
   }
@@ -100,10 +100,11 @@ const resetPassword = async (resetPasswordToken, newPassword, actor = "customer"
   try {
     const resetPasswordTokenDoc = await tokenService.verifyToken(resetPasswordToken, tokenTypes.RESET_PASSWORD);
     const user = actor === "customer"
-      ? await userService.getUserById(resetPasswordTokenDoc.user)
+      ? await userService.getUserById(resetPasswordTokenDoc.user?.id)
       : actor === "provider"
-      ? await userService.getProviderById(resetPasswordTokenDoc.user)
+      ? await userService.getProviderById(resetPasswordTokenDoc.user?.id)
       : null;
+    // const user = await userService.getUserById(resetPasswordTokenDoc.user);
     if (!user) {
       throw new Error();
     }

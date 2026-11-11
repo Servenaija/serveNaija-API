@@ -9,23 +9,19 @@ const { tokenTypes } = require('../config/tokens');
 const Token = require('../models/token')
 /**
  * Generate token
- * @param {string} userId - User ID string (not an object)
+ * @param {ObjectId} userId
  * @param {Moment} expires
  * @param {string} type
- * @param {string} [actor] - 'customer' or 'provider'
  * @param {string} [secret]
  * @returns {string}
  */
-const generateToken = (userId, expires, type, actor, secret = config.jwt.secret) => {
+const generateToken = (userId, expires, type, secret = config.jwt.secret) => {
   const payload = {
     sub: userId,
     iat: moment().unix(),
     exp: expires.unix(),
     type,
   };
-  if (actor) {
-    payload.actor = actor;
-  }
   return jwt.sign(payload, secret);
 };
 
@@ -97,13 +93,12 @@ const verifyTokenApp = async (token, type, user) => {
  * @returns {Promise<Object>}
  */
 const generateAuthTokens = async (user) => {
-  const userId = user.id;
   const accessTokenExpires = moment().add(config.jwt.accessExpirationMinutes, 'm');
-  const accessToken = generateToken(userId, accessTokenExpires, tokenTypes.ACCESS, user.actor);
+  const accessToken = generateToken(user, accessTokenExpires, tokenTypes.ACCESS);
 
   const refreshTokenExpires = moment().add(config.jwt.refreshExpirationDays, 'days');
-  const refreshToken = generateToken(userId, refreshTokenExpires, tokenTypes.REFRESH, user.actor);
-  await saveToken(refreshToken, userId, refreshTokenExpires, tokenTypes.REFRESH);
+  const refreshToken = generateToken(user, refreshTokenExpires, tokenTypes.REFRESH);
+  await saveToken(refreshToken, user?.id, refreshTokenExpires, tokenTypes.REFRESH);
 
   return {
     access: {
@@ -139,16 +134,14 @@ const generateResetPasswordToken = async (email, actor) => {
   const expires = moment().add(config.jwt.resetPasswordExpirationMinutes, 'minutes');
   console.log("Token expires at:", expires.toISOString());
 
-  const userId = user._id.toString();
   const resetPasswordToken = generateToken(
-    userId,
+    { id: user._id, actor },
     expires,
-    tokenTypes.RESET_PASSWORD,
-    actor
+    tokenTypes.RESET_PASSWORD
   );
   console.log("Generated token:", resetPasswordToken);
 
-  await saveToken(resetPasswordToken, userId, expires, tokenTypes.RESET_PASSWORD);
+  await saveToken(resetPasswordToken, user._id, expires, tokenTypes.RESET_PASSWORD);
   console.log("Token saved to DB successfully");
 
   return resetPasswordToken;
@@ -162,9 +155,8 @@ const generateResetPasswordToken = async (email, actor) => {
  */
 const generateVerifyEmailToken = async (user, actor = "customer") => {
   const expires = moment().add(config.jwt.verifyEmailExpirationMinutes, 'minutes');
-  const userId = user._id.toString();
-  const verifyEmailToken = generateToken(userId, expires, tokenTypes.VERIFY_EMAIL, actor);
-  await saveToken(verifyEmailToken, userId, expires, tokenTypes.VERIFY_EMAIL);
+  const verifyEmailToken = generateToken({id: user._id, actor}, expires, tokenTypes.VERIFY_EMAIL);
+  await saveToken(verifyEmailToken, user._id, expires, tokenTypes.VERIFY_EMAIL);
   return verifyEmailToken;
 };
 
