@@ -91,28 +91,51 @@ const refreshAuth = async (refreshToken, actor = "customer") => {
 
 
 /**
- * Reset password
+ * Reset password — finds user by email in customer or provider schema
  * @param {string} resetPasswordToken
  * @param {string} newPassword
+ * @param {string} [actor] - 'customer' or 'provider'
+ * @param {string} [email] - user email to locate the account
  * @returns {Promise}
  */
-const resetPassword = async (resetPasswordToken, newPassword, actor = "customer") => {
+const resetPassword = async (resetPasswordToken, newPassword, actor, email) => {
+  const jwt = require('jsonwebtoken');
+  const config = require('../config/auth');
+
+  // Verify token is valid (not expired, correct secret)
+  let payload;
   try {
-    const resetPasswordTokenDoc = await tokenService.verifyToken(resetPasswordToken, tokenTypes.RESET_PASSWORD);
-    const user = actor === "customer"
-      ? await userService.getUserById(resetPasswordTokenDoc.user?.id)
-      : actor === "provider"
-      ? await userService.getProviderById(resetPasswordTokenDoc.user?.id)
-      : null;
-    // const user = await userService.getUserById(resetPasswordTokenDoc.user);
-    if (!user) {
-      throw new Error();
-    }
-    await userService.updateUserById(user._id, { password: newPassword }, actor);
-    await dB.tokens.deleteMany( { user: user._id, type: tokenTypes.RESET_PASSWORD } );
+    payload = jwt.verify(resetPasswordToken, config.jwt.secret);
   } catch (error) {
-    throw new ApiError(httpStatus.UNAUTHORIZED, error);
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Invalid or expired token');
   }
+
+  // Find user by email in both customer and provider schemas
+  let user;
+  if (actor === 'provider') {
+    user = await userService.getProviderByEmail(email);
+  } else {
+    user = await userService.getUserByEmail(email) || await userService.getProviderByEmail(email);
+  }
+
+  if (!user) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'User not found');
+  }
+
+  // Verify the token belongs to this user (check token doc exists)
+  const resetPasswordTokenDoc = await dB.tokens.findOne({
+    token: resetPasswordToken,
+    type: tokenTypes.RESET_PASSWORD,
+    blacklisted: false,
+  });
+
+  if (!resetPasswordTokenDoc) {
+    throw new ApiError(httpStatus.UNAUTHORIZED, 'Token not found');
+  }
+
+  // Update password using the found user's ID
+  await userService.updateUserById(user._id, { password: newPassword }, actor || 'customer');
+  await dB.tokens.deleteMany({ user: user._id, type: tokenTypes.RESET_PASSWORD });
 };
 
 /**

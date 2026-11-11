@@ -408,7 +408,7 @@ const resetPassword = catchAsync(async (req, res) => {
     });
   }
 
-  await authService.resetPassword(token, password, type);
+  await authService.resetPassword(token, password, type, email);
 
   res.status(httpStatus.OK).json({
     status: true,
