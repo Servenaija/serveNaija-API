@@ -399,16 +399,16 @@ const sendMagicLink = catchAsync(async (req, res) => {
 });
 
 const resetPassword = catchAsync(async (req, res) => {
-  const { email, token, password, type, confirmPassword } = req.body;
+  const { email, password, type, confirmPassword } = req.body;
 
-  if (!email || !token || !password || !type) {
+  if (!email || !password || !type) {
     return res.status(httpStatus.BAD_REQUEST).json({
       status: false,
-      message: 'Email, token, password and actor are required.',
+      message: 'Email, password and actor are required.',
     });
   }
 
-  await authService.resetPassword(token, password, type, email);
+  await authService.resetPassword(password, type, email);
 
   res.status(httpStatus.OK).json({
     status: true,

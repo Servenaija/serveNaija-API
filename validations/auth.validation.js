@@ -157,10 +157,6 @@ const forgotPassword = {
       'string.empty': 'Actor is required to reset password.',
       'any.only': 'Actor must be either provider or customer.',
     }),
-    token: Joi.string().required().messages({
-      'any.required': 'Reset token is required.',
-      'string.empty': 'Reset token is required.',
-    }),
     password: Joi.string().required().custom(password).messages({
       'any.required': 'Password is required.',
       'string.empty': 'Password is required.',
