@@ -6,20 +6,28 @@ const { dB } = require('../models');
 const normalizeRegistrationPayload = (userBody = {}) => {
   const normalized = { ...userBody };
 
-  const firstName = (normalized.firstName || '').trim();
-  const lastName = (normalized.lastName || '').trim();
+  const hasFirstName = !!normalized.firstName && String(normalized.firstName).trim() !== '';
+  const hasLastName = !!normalized.lastName && String(normalized.lastName).trim() !== '';
+  const hasFullName = !!normalized.fullName && String(normalized.fullName).trim() !== '';
 
-  if (!normalized.fullName || !normalized.fullName.trim()) {
-    normalized.fullName = `${firstName} ${lastName}`.trim();
+  // Preserve existing fullName when provided. If not provided but firstName/lastName
+  // are being registered, construct fullName from them. Otherwise leave as-is so
+  // password-only resets don't blank out an existing fullName.
+  if (!hasFullName && (hasFirstName || hasLastName)) {
+    const first = normalized.firstName || '';
+    const last = normalized.lastName || '';
+    normalized.fullName = `${first} ${last}`.trim();
   }
 
-  if (!normalized.firstName && normalized.fullName) {
+  // Generate firstName from fullName only when firstName is not already set.
+  if (!hasFirstName && hasFullName) {
     normalized.firstName = normalized.fullName.split(' ')[0] || '';
   }
 
-  if (!normalized.lastName && normalized.fullName) {
+  // Generate lastName from fullName only when lastName is not already set.
+  if (!hasLastName && hasFullName) {
     const [, ...rest] = normalized.fullName.trim().split(' ');
-    normalized.lastName = rest.join(' ');
+    normalized.lastName = rest.join(' ') || '';
   }
 
   if (normalized.email) {
