@@ -17,7 +17,7 @@ const customerSchema = new mongoose.Schema(
 		fullName: {
 			type: String,
 			trim: true,
-			required: true,
+			default: '',
 		},
 		email: {
 			type: String,
