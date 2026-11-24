@@ -129,7 +129,10 @@ const saveBusinessContact = catchAsync(async (req, res) => {
     updateData['business.contactPhone'] = contactPhone.trim();
   }
   if (businessDescription !== undefined && businessDescription.trim()) {
-    updateData['business.businessDescription'] = businessDescription.trim();
+    const trimmedDesc = businessDescription.trim();
+    updateData['business.businessDescription'] = trimmedDesc;
+    // Keep service.description in sync with businessDescription on every save/update
+    updateData['service.description'] = trimmedDesc;
   }
   if (staffSize !== undefined && staffSize.trim()) {
     updateData['business.staffSize'] = staffSize.trim();
@@ -298,15 +301,16 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
   let imageUrl = null;
   let coverImageUrl = null;
 
-  console.log('Files received:', req.files);
+  // Defensive: req.files can be undefined when multer receives empty FormData
+  const files = req.files || {};
+
+  console.log('Files received:', files);
   console.log('Body received:', req.body);
 
   // Handle profile photo upload - check both 'photo' and 'image' fields
-  const photoFile = (req.files && req.files.photo && req.files.photo.length > 0)
-    ? req.files.photo[0]
-    : (req.files && req.files.image && req.files.image.length > 0)
-      ? req.files.image[0]
-      : null;
+  const photoFile =
+    (files.photo && files.photo.length > 0 ? files.photo[0] : null) ||
+    (files.image && files.image.length > 0 ? files.image[0] : null);
 
   if (photoFile) {
     try {
@@ -339,9 +343,9 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
   }
 
   // Handle cover image upload
-  if (req.files && req.files.coverImage && req.files.coverImage.length > 0) {
+  if (files.coverImage && files.coverImage.length > 0) {
     try {
-      const file = req.files.coverImage[0];
+      const file = files.coverImage[0];
       const key = `business/${userId}/cover/${Date.now()}-${file.originalname}`;
 
       console.log('Uploading cover image:', key);
@@ -376,7 +380,10 @@ const saveBusinessPhotos = catchAsync(async (req, res) => {
   }
 
   // If cover image URL is provided in body
-  if (req.body.coverImage && !(req.files && req.files.coverImage && req.files.coverImage.length > 0)) {
+  if (
+    req.body.coverImage &&
+    !(files.coverImage && files.coverImage.length > 0)
+  ) {
     coverImageUrl = req.body.coverImage;
     console.log('Cover URL from body:', coverImageUrl);
   }
